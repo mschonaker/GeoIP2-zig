@@ -85,8 +85,8 @@ pub const MMDBFile = struct {
         try json_stream.endObject();
     }
 
-    pub fn resolveIpV4(self: MMDBFile, address: [4]u8, writer: anytype) !void {
-        try resolveIpV6(self, [16]u8{
+    pub fn lookupIpV4(self: MMDBFile, address: [4]u8, writer: anytype) !void {
+        try lookupIpV6(self, [16]u8{
             0x00,       0x00,
             0x00,       0x00,
             0x00,       0x00,
@@ -98,7 +98,7 @@ pub const MMDBFile = struct {
         }, writer);
     }
 
-    pub fn resolveIpV6(self: MMDBFile, address: [16]u8, writer: anytype) !void {
+    pub fn lookupIpV6(self: MMDBFile, address: [16]u8, writer: anytype) !void {
         const offset = self.locateDataNode(address);
         if (offset) |o| {
             _ = try self.writeData(o, writer);
