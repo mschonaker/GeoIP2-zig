@@ -79,7 +79,7 @@ pub const MetadataReader = struct {
     pub fn read(self: *MetadataReader, metadata: *Metadata) !void {
         try self.reader.assertNextType(.map);
 
-        const len = self.reader.readPayloadSize();
+        const len = try self.reader.readPayloadSize();
         for (0..len) |_| {
             // Decode key. According to the spec they're always strings.
             const key = try self.reader.readString();
@@ -109,7 +109,7 @@ pub const MetadataReader = struct {
     fn readDescriptionMap(self: *MetadataReader, metadata: *Metadata) !void {
         try self.reader.assertNextType(.map);
 
-        const len = self.reader.readPayloadSize();
+        const len = try self.reader.readPayloadSize();
         for (0..len) |_| {
             const key = try self.reader.readString();
             const value = try self.reader.readString();
@@ -120,7 +120,7 @@ pub const MetadataReader = struct {
     fn readLanguagesArray(self: *MetadataReader, metadata: *Metadata) !void {
         try self.reader.assertNextType(.array);
 
-        const len = self.reader.readPayloadSize();
+        const len = try self.reader.readPayloadSize();
         for (0..len) |_| {
             const lang = try self.reader.readString();
             try metadata.appendLanguage(lang);

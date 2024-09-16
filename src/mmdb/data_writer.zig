@@ -29,11 +29,9 @@ const WriterError = error{
     Unexpected,
 };
 
-const ReaderError = error{
-    UnexpectedType,
-};
+const ReaderError = mmdb_data_reader.Error;
 
-const Error = WriterError || ReaderError;
+pub const Error = WriterError || ReaderError;
 
 pub const DataWriter = struct {
     data_offset: usize,
@@ -86,7 +84,7 @@ pub const DataWriter = struct {
 
     pub fn writeMap(self: DataWriter, reader: *DataReader, writer: anytype) Error!void {
         try reader.assertNextType(.map);
-        const l = reader.readPayloadSize();
+        const l = try reader.readPayloadSize();
         try writer.beginObject();
         for (0..l) |_| {
             const key = try reader.readMapKey();
@@ -98,7 +96,7 @@ pub const DataWriter = struct {
 
     pub fn writeArray(self: DataWriter, reader: *DataReader, writer: anytype) Error!void {
         try reader.assertNextType(.array);
-        const l = reader.readPayloadSize();
+        const l = try reader.readPayloadSize();
         try writer.beginArray();
         for (0..l) |_| {
             try self.writeObject(reader, writer);
@@ -108,7 +106,7 @@ pub const DataWriter = struct {
 
     pub fn writeBoolean(_: DataWriter, reader: *DataReader, writer: anytype) Error!void {
         try reader.assertNextType(.boolean);
-        const l = reader.readPayloadSize();
+        const l = try reader.readPayloadSize();
         try writer.write(l != 0);
     }
 };

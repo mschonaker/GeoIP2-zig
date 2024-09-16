@@ -19,10 +19,10 @@ pub const MMDBFile = struct {
     metadata_offset: usize,
     nodes_offset: usize,
     metadata: Metadata,
-    enable_assertions: bool,
+    comptime enable_assertions: bool = true,
     allocator: Allocator,
 
-    pub fn init(data: []const u8, alloc: Allocator, enable_assertions: bool) !MMDBFile {
+    pub fn init(data: []const u8, alloc: Allocator, comptime enable_assertions: bool) !MMDBFile {
         const metadata_offset = try locateMetadataOffset(data);
         const data_reader = mmdb_data_reader.dataReader(data, metadata_offset, enable_assertions, undefined);
         var metadata_reader = mmdb_metadata.metadataReader(data_reader);

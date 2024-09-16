@@ -1,28 +1,27 @@
 const std = @import("std");
-const Tuple = std.meta.Tuple;
-const StringStringHashMap = std.StringHashMapUnmanaged([]const u8);
-const StringArrayList = std.ArrayListUnmanaged([]const u8);
-const fs = std.fs;
-const Allocator = std.mem.Allocator;
-const eql = std.mem.eql;
-const expectEqual = std.testing.expectEqual;
-const expectEqualStrings = std.testing.expectEqualStrings;
 
-pub fn dataReader(data: []const u8, offset: usize, enable_assertions: bool, data_offset: usize) DataReader {
+pub const Error = error{
+    UnexpectedType,
+    InvalidFormat,
+};
+
+/// A factory method that returns a **DataReader**.
+pub fn dataReader(data: []const u8, offset: usize, comptime enable_assertions: bool, data_offset: usize) DataReader {
     return .{
         .data = data,
         .offset = offset,
-        .enable_assertions = enable_assertions,
         // Required to resolve pointers.
+        // It is okay to initialize it with undefined if not supposed to be used.
         .data_offset = data_offset,
+        .enable_assertions = enable_assertions,
     };
 }
 
 pub const DataReader = struct {
     data: []const u8,
     offset: usize = 0,
-    enable_assertions: bool = true,
     data_offset: usize = undefined,
+    comptime enable_assertions: bool = true,
 
     pub fn decodeNextType(self: *DataReader) DataType {
         // loop: while (true) {
@@ -40,14 +39,10 @@ pub const DataReader = struct {
                     13 => .end,
                     14 => .boolean,
                     15 => .float,
-                    // padding??
-                    // 0 => {
-                    //     self.offset += 1;
-                    //     continue :loop;
-                    // },
                     else => {
-                        std.debug.print("Unimplemented {d}!\n", .{x});
-                        unreachable;
+                        // Panic. We shouldn't reach here. Kill the process
+                        // before it makes any damage.
+                        @panic("Invalid type: " ++ [_]u8{x});
                     },
                 };
             },
@@ -59,38 +54,55 @@ pub const DataReader = struct {
             6 => .uint32,
             7 => .map,
             else => {
-                std.debug.print("Unimplemented {d}!\n", .{x});
-                unreachable;
+                // Panic. We shouldn't reach here. Kill the process
+                // before it makes any damage.
+                @panic("Invalid type: " ++ [_]u8{x});
             },
         };
         // }
     }
 
+    /// Returns error.UnexpectedType if assertions are enabled and the type
+    /// doesn't match the expected.
     pub inline fn assertNextType(self: *DataReader, comptime expected: DataType) !void {
         if (!self.enable_assertions) return;
+
         const decoded = self.decodeNextType();
-        if (decoded != expected) {
-            std.debug.print("Unexpected type: {any}, expected: {any}\n", .{ decoded, expected });
-            return error.UnexpectedType;
-        }
+        if (decoded == expected) return;
+
+        // There is not way this code can recover from this kind of error.
+        // It would be okay to panic, but we have to let the invoker decide.
+        std.debug.print("Unexpected type: {any}, expected: {any}\n", .{ decoded, expected });
+        return error.UnexpectedType;
     }
 
+    /// "Variadic args" version of **assertNextType**.
     pub inline fn assertNextTypes(self: *DataReader, expecteds: []const DataType) !void {
         if (!self.enable_assertions) return;
+
         const decoded = self.decodeNextType();
-        inline for (expecteds) |expected| {
+        inline for (expecteds) |expected|
             if (decoded == expected) return;
-        }
+
+        // There is not way this code can recover from this kind of error.
+        // It would be okay to panic, but we have to let the invoker decide.
         std.debug.print("Unexpected type: {any}, expected: {any}\n", .{ decoded, expecteds });
         return error.UnexpectedType;
     }
 
-    pub fn readPayloadSize(self: *DataReader) usize {
+    inline fn bytesToUsize(comptime amount: usize, bytes: []const u8) usize {
+        var accum: usize = 0;
+        inline for (0..amount) |i|
+            accum = accum << 8 | bytes[i];
+        return accum;
+    }
+
+    pub fn readPayloadSize(self: *DataReader) !usize {
         // Extra increment in the base cursor position if the type
         // was extended.
         var gap: usize = 0;
         // if extended type, increment by one.
-        if ((self.data[self.offset] & 0b11100000) == 0) gap += 1;
+        if ((self.data[self.offset] & 0b11100000) == 0) gap = 1;
 
         const len = self.data[self.offset] & 0b00011111;
         switch (len) {
@@ -100,26 +112,23 @@ pub const DataReader = struct {
             },
             29 => {
                 const r: usize = 29 //
-                + @as(usize, self.data[self.offset + gap + 1]);
+                + bytesToUsize(1, self.data[self.offset + gap + 1 ..]);
                 self.offset += gap + 2;
                 return r;
             },
             30 => {
                 const r: usize = 285 //
-                + @as(usize, self.data[self.offset + gap + 1]) * 256 //
-                + @as(usize, self.data[self.offset + gap + 2]);
+                + bytesToUsize(2, self.data[self.offset + gap + 1 ..]);
                 self.offset += gap + 3;
                 return r;
             },
             31 => {
                 const r: usize = 65821 //
-                + @as(usize, self.data[self.offset + gap + 1]) * 256 * 256 //
-                + @as(usize, self.data[self.offset + gap + 2]) * 256 //
-                + @as(usize, self.data[self.offset + gap + 3]);
+                + bytesToUsize(3, self.data[self.offset + gap + 1 ..]);
                 self.offset += gap + 4;
                 return r;
             },
-            else => unreachable,
+            else => return error.InvalidFormat,
         }
     }
 
@@ -133,53 +142,38 @@ pub const DataReader = struct {
         const remainder: usize = byte & 0b00000111;
         switch (size) {
             0 => {
-                var accum: usize = remainder;
-                accum <<= 8;
-                accum |= @as(usize, self.data[self.offset + 1]);
+                var accum: usize = remainder << 8;
+                accum |= bytesToUsize(1, self.data[self.offset + 1 ..]);
                 self.offset += 2;
                 return accum;
             },
             1 => {
-                var accum: usize = remainder;
-                accum <<= 8;
-                accum |= @as(usize, self.data[self.offset + 1]);
-                accum <<= 8;
-                accum |= @as(usize, self.data[self.offset + 2]);
+                var accum: usize = remainder << 16;
+                accum |= bytesToUsize(2, self.data[self.offset + 1 ..]);
                 accum += 2048;
                 self.offset += 3;
                 return accum;
             },
             2 => {
-                var accum: usize = remainder;
-                accum <<= 8;
-                accum |= @as(usize, self.data[self.offset + 1]);
-                accum <<= 8;
-                accum |= @as(usize, self.data[self.offset + 2]);
-                accum <<= 8;
-                accum |= @as(usize, self.data[self.offset + 3]);
+                var accum: usize = remainder << 24;
+                accum |= bytesToUsize(3, self.data[self.offset + 1 ..]);
                 accum += 526336;
                 self.offset += 4;
                 return accum;
             },
             3 => {
-                var accum: usize = @as(usize, self.data[self.offset + 1]);
-                accum <<= 8;
-                accum |= @as(usize, self.data[self.offset + 2]);
-                accum <<= 8;
-                accum |= @as(usize, self.data[self.offset + 3]);
-                accum <<= 8;
-                accum |= @as(usize, self.data[self.offset + 4]);
+                const accum: usize = bytesToUsize(4, self.data[self.offset + 1 ..]);
                 self.offset += 5;
                 return accum;
             },
-            else => unreachable,
+            else => return error.InvalidFormat,
         }
     }
 
     pub fn readString(self: *DataReader) ![]const u8 {
         try self.assertNextType(.string);
 
-        const len = self.readPayloadSize();
+        const len = try self.readPayloadSize();
         const s = self.data[self.offset .. self.offset + len];
         self.offset += len;
         return s;
@@ -204,7 +198,7 @@ pub const DataReader = struct {
     pub fn readBytes(self: *DataReader) ![]const u8 {
         try self.assertNextType(.bytes);
 
-        const len = self.readPayloadSize();
+        const len = try self.readPayloadSize();
         const s = self.data[self.offset .. self.offset + len];
         self.offset += len;
         return s;
@@ -213,7 +207,7 @@ pub const DataReader = struct {
     pub fn readUint16(self: *DataReader) !u16 {
         try self.assertNextType(.uint16);
 
-        const len = self.readPayloadSize();
+        const len = try self.readPayloadSize();
         if (len == 0) return 0;
         var accum: u16 = 0;
         for (0..len) |_| {
@@ -227,7 +221,7 @@ pub const DataReader = struct {
     pub fn readUint32(self: *DataReader) !u32 {
         try self.assertNextType(.uint32);
 
-        const len = self.readPayloadSize();
+        const len = try self.readPayloadSize();
         if (len == 0) return 0;
         var accum: u32 = 0;
         for (0..len) |_| {
@@ -241,7 +235,7 @@ pub const DataReader = struct {
     pub fn readUint64(self: *DataReader) !u64 {
         try self.assertNextType(.uint64);
 
-        const len = self.readPayloadSize();
+        const len = try self.readPayloadSize();
         if (len == 0) return 0;
         var accum: u64 = 0;
         for (0..len) |_| {
@@ -282,8 +276,8 @@ pub const DataReader = struct {
     }
 };
 
+/// For reference: https://github.com/maxmind/MaxMind-DB-Reader-java/blob/main/src/main/java/com/maxmind/db/Type.java#L4
 const DataType = enum {
-    // https://github.com/maxmind/MaxMind-DB-Reader-java/blob/main/src/main/java/com/maxmind/db/Type.java#L4
     pointer, // 1
     string, // 2
     double, // 3
@@ -302,6 +296,9 @@ const DataType = enum {
 };
 
 ////////////////////////////////////////////////////////////////////////////////
+
+const expectEqual = std.testing.expectEqual;
+const expectEqualStrings = std.testing.expectEqualStrings;
 
 test "string lengths" {
     // 01011101 00110011 UTF-8 string - 80 bytes long
