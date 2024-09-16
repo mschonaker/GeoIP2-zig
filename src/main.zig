@@ -52,7 +52,6 @@ pub fn main() !void {
 
     while (true) {
         const connection = try listener.accept();
-        std.debug.print("Accepted new connection.\n", .{});
 
         // We are going to delegate the connection and also delegate an arena.
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -69,24 +68,70 @@ fn dispatchConnection(allocator: Allocator, connection: std.net.Server.Connectio
     defer connection.stream.close();
 
     _ = allocator;
-    var request_buff = [_]u8{undefined} ** (2 * 1024);
-    var response_buff = [_]u8{undefined} ** (2 * 1024);
+    var request_buff = [_]u8{undefined} ** 1024;
+    var response_buff = [_]u8{undefined} ** 1024;
 
     var server = std.http.Server.init(connection, &request_buff);
     var request = try server.receiveHead();
-    std.debug.print("{} {s} {}\n", .{ request.head.method, request.head.target, request.head.version });
-    var response = request.respondStreaming(.{
-        .send_buffer = &response_buff,
-        .respond_options = .{
-            .extra_headers = &[_]std.http.Header{.{
-                .name = "Content-Type",
-                .value = "application/json",
-            }},
-        },
-    });
 
-    try mmdb.lookupIpV4([_]u8{ 168, 197, 202, 44 }, response.writer());
-    try response.end();
+    std.debug.print("{} {s} {}\n", .{ request.head.method, request.head.target, request.head.version });
+
+    const ipv4_prefix = "/ipv4/";
+    const ipv6_prefix = "/ipv6/";
+
+    if (std.mem.startsWith(u8, request.head.target, ipv4_prefix)) {
+        const parsed = parseIpV4(request.head.target[ipv4_prefix.len..]) catch {
+            try request.respond("Invalid format", .{ .status = .bad_request });
+            return error.BadRequest;
+        };
+
+        var response = request.respondStreaming(.{
+            .send_buffer = &response_buff,
+            .respond_options = .{
+                .extra_headers = &[_]std.http.Header{.{
+                    .name = "Content-Type",
+                    .value = "application/json",
+                }},
+            },
+        });
+
+        try mmdb.lookupIpV4(parsed, response.writer());
+        try response.end();
+    } else if (std.mem.startsWith(u8, request.head.target, ipv6_prefix)) {
+        const parsed = parseIpV6(request.head.target[ipv6_prefix.len..]) catch {
+            try request.respond("Invalid format", .{ .status = .bad_request });
+            return error.BadRequest;
+        };
+
+        var response = request.respondStreaming(.{
+            .send_buffer = &response_buff,
+            .respond_options = .{
+                .extra_headers = &[_]std.http.Header{.{
+                    .name = "Content-Type",
+                    .value = "application/json",
+                }},
+            },
+        });
+
+        try mmdb.lookupIpV6(parsed, response.writer());
+        try response.end();
+    } else {
+        try request.respond("Unknown target", .{ .status = .bad_request });
+        return error.BadRequest;
+    }
+}
+
+fn parseIpV4(str: []const u8) ![4]u8 {
+    const a = try std.net.Address.parseIp4(str, 0);
+    const x = a.in.sa.addr;
+    const b = std.mem.asBytes(&x);
+    // std.debug.print("{d}", .{b.*});
+    return b.*;
+}
+
+fn parseIpV6(str: []const u8) ![16]u8 {
+    const a = try std.net.Address.parseIp6(str, 0);
+    return a.in6.sa.addr;
 }
 
 test {
