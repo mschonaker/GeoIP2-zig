@@ -3,23 +3,7 @@ const std = @import("std");
 const mmdb_data_reader = @import("data_reader.zig");
 const DataReader = mmdb_data_reader.DataReader;
 
-const WriterError = error{
-    DiskQuota,
-    FileTooBig,
-    InputOutput,
-    NoSpaceLeft,
-    DeviceBusy,
-    InvalidArgument,
-    AccessDenied,
-    BrokenPipe,
-    SystemResources,
-    OperationAborted,
-    NotOpenForWriting,
-    LockViolation,
-    WouldBlock,
-    ConnectionResetByPeer,
-    Unexpected,
-};
+const WriterError = anyerror;
 
 const ReaderError = mmdb_data_reader.Error;
 
