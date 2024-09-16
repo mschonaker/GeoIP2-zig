@@ -1,8 +1,6 @@
 const std = @import("std");
-const mem = std.mem;
 const Allocator = std.mem.Allocator;
 const io = std.io;
-const fs = std.fs;
 const json = std.json;
 
 const mmdb_metadata = @import("metadata.zig");
@@ -24,7 +22,12 @@ pub const MMDBFile = struct {
 
     pub fn init(data: []const u8, alloc: Allocator, comptime enable_assertions: bool) !MMDBFile {
         const metadata_offset = try locateMetadataOffset(data);
-        const data_reader = mmdb_data_reader.dataReader(data, metadata_offset, enable_assertions, undefined);
+        const data_reader = mmdb_data_reader.dataReader(
+            data,
+            metadata_offset,
+            enable_assertions,
+            undefined,
+        );
         var metadata_reader = mmdb_metadata.metadataReader(data_reader);
         var metadata = Metadata.init(alloc);
         try metadata_reader.read(&metadata);
@@ -173,7 +176,11 @@ pub const MMDBFile = struct {
 
     pub fn writeData(self: MMDBFile, offset: usize, writer: anytype) !usize {
         if (offset < self.nodes_offset or offset >= (self.metadata_offset - separator.len)) {
-            std.debug.print("offset {d} is between {d} and {d}\n", .{ offset, self.nodes_offset, self.metadata_offset - separator.len });
+            std.debug.print("offset {d} is between {d} and {d}\n", .{
+                offset,
+                self.nodes_offset,
+                self.metadata_offset - separator.len,
+            });
             return error.InvalidArgument;
         }
 

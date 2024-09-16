@@ -1,15 +1,11 @@
 const std = @import("std");
-const fs = std.fs;
-const json = std.json;
 const StringStringHashMap = std.StringHashMapUnmanaged([]const u8);
 const StringArrayList = std.ArrayListUnmanaged([]const u8);
 const Allocator = std.mem.Allocator;
 const eql = std.mem.eql;
-const expectEqual = std.testing.expectEqual;
-const expectEqualStrings = std.testing.expectEqualStrings;
 
-const data_reader = @import("data_reader.zig");
-const DataReader = data_reader.DataReader;
+const mmdb_data_reader = @import("data_reader.zig");
+const DataReader = mmdb_data_reader.DataReader;
 
 /// A container for:
 /// {
@@ -182,8 +178,10 @@ const MetadataWriter = struct {
 
 ////////////////////////////////////////////////////////////////////////////////
 
+const expectEqualStrings = std.testing.expectEqualStrings;
+
 test {
-    _ = data_reader;
+    _ = mmdb_data_reader;
 }
 
 test "serialize to JSON" {
@@ -207,7 +205,10 @@ test "serialize to JSON" {
     var string = std.ArrayList(u8).init(std.testing.allocator);
     defer string.deinit();
 
-    var json_stream = json.writeStream(string.writer(), .{ .emit_null_optional_fields = true, .whitespace = .indent_2 });
+    var json_stream = std.json.writeStream(string.writer(), .{
+        .emit_null_optional_fields = true,
+        .whitespace = .indent_2,
+    });
     try writer.writeJSON(&json_stream);
 
     const expected =
