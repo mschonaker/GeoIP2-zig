@@ -1,15 +1,7 @@
 const std = @import("std");
-const io = std.io;
-const json = std.json;
 
 const mmdb_data_reader = @import("data_reader.zig");
 const DataReader = mmdb_data_reader.DataReader;
-
-pub fn dataWriter(data_offset: usize) DataWriter {
-    return .{
-        .data_offset = data_offset,
-    };
-}
 
 const WriterError = error{
     DiskQuota,
@@ -33,6 +25,14 @@ const ReaderError = mmdb_data_reader.Error;
 
 pub const Error = WriterError || ReaderError;
 
+/// Factory method of a **DataWriter**.
+pub fn dataWriter(data_offset: usize) DataWriter {
+    return .{
+        .data_offset = data_offset,
+    };
+}
+
+/// Copies data from the reader to the writer.
 pub const DataWriter = struct {
     data_offset: usize,
 
@@ -42,55 +42,50 @@ pub const DataWriter = struct {
             .pointer => try self.writePointer(reader, writer),
             .string => try self.writeString(reader, writer),
             .map => try self.writeMap(reader, writer),
-            .uint16 => try self.writeUint16(reader, writer),
-            .uint32 => try self.writeUint32(reader, writer),
-            .double => try self.writeDouble(reader, writer),
             .array => try self.writeArray(reader, writer),
             .boolean => try self.writeBoolean(reader, writer),
-            else => {
-                std.debug.print("Uninmplemented: {any}\n", .{dt});
-                unreachable;
-            },
+            .uint16 => try self.writeUint16(reader, writer),
+            .uint32 => try self.writeUint32(reader, writer),
+            .uint64 => try self.writeUint64(reader, writer),
+            .uint128 => try self.writeUint128(reader, writer),
+            .double => try self.writeDouble(reader, writer),
+            else => @panic("Unimplemented"),
         }
     }
 
     pub fn writePointer(self: DataWriter, reader: *DataReader, writer: anytype) Error!void {
-        const p = try reader.readPointer();
-        const current = reader.offset;
-        reader.offset = self.data_offset + p;
+        const pointer: usize = try reader.readPointer();
+
+        // Copy the current offset. Point the reader to the value read.
+        const current_offset = reader.offset;
+        reader.offset = self.data_offset + pointer;
+
+        // Read anything.
         try self.writeObject(reader, writer);
-        reader.offset = current;
-    }
 
-    pub fn writeString(_: DataWriter, reader: *DataReader, writer: anytype) Error!void {
-        const s = try reader.readString();
-        try writer.write(s);
-    }
-
-    pub fn writeUint16(_: DataWriter, reader: *DataReader, writer: anytype) Error!void {
-        const u = try reader.readUint16();
-        try writer.write(u);
-    }
-
-    pub fn writeUint32(_: DataWriter, reader: *DataReader, writer: anytype) Error!void {
-        const u = try reader.readUint32();
-        try writer.write(u);
-    }
-
-    pub fn writeDouble(_: DataWriter, reader: *DataReader, writer: anytype) Error!void {
-        const u = try reader.readDouble();
-        try writer.write(u);
+        // Restore the offset.
+        reader.offset = current_offset;
     }
 
     pub fn writeMap(self: DataWriter, reader: *DataReader, writer: anytype) Error!void {
         try reader.assertNextType(.map);
+
+        // read the number of entries.
         const l = try reader.readPayloadSize();
+
+        // Tell the writer to start an object.
         try writer.beginObject();
         for (0..l) |_| {
-            const key = try reader.readMapKey();
+
+            // Keys can be a string or a pointer to a string.
+            const key: []const u8 = try reader.readMapKey();
+
+            // Write the key, then the object.
             try writer.objectField(key);
             try self.writeObject(reader, writer);
         }
+
+        // Tell the writer to end the object.
         try writer.endObject();
     }
 
@@ -106,7 +101,39 @@ pub const DataWriter = struct {
 
     pub fn writeBoolean(_: DataWriter, reader: *DataReader, writer: anytype) Error!void {
         try reader.assertNextType(.boolean);
+
+        // Booleans are encoded in the payload size.
         const l = try reader.readPayloadSize();
         try writer.write(l != 0);
+    }
+
+    pub fn writeString(_: DataWriter, reader: *DataReader, writer: anytype) Error!void {
+        const s: []const u8 = try reader.readString();
+        try writer.write(s);
+    }
+
+    pub fn writeUint16(_: DataWriter, reader: *DataReader, writer: anytype) Error!void {
+        const u: u16 = try reader.readUint16();
+        try writer.write(u);
+    }
+
+    pub fn writeUint32(_: DataWriter, reader: *DataReader, writer: anytype) Error!void {
+        const u: u32 = try reader.readUint32();
+        try writer.write(u);
+    }
+
+    pub fn writeUint64(_: DataWriter, reader: *DataReader, writer: anytype) Error!void {
+        const u: u64 = try reader.readUint64();
+        try writer.write(u);
+    }
+
+    pub fn writeUint128(_: DataWriter, reader: *DataReader, writer: anytype) Error!void {
+        const u: u128 = try reader.readUint128();
+        try writer.write(u);
+    }
+
+    pub fn writeDouble(_: DataWriter, reader: *DataReader, writer: anytype) Error!void {
+        const u: f64 = try reader.readDouble();
+        try writer.write(u);
     }
 };

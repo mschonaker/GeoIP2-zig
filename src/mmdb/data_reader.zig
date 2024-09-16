@@ -180,28 +180,31 @@ pub const DataReader = struct {
     }
 
     pub fn readMapKey(self: *DataReader) ![]const u8 {
+
+        // Map keys can be strings or pointers to strings.
         try self.assertNextTypes(&.{ .string, .pointer });
+
         switch (self.decodeNextType()) {
+
+            // If string, just read it.
             .string => return try self.readString(),
+
+            // If pointer, replace the offset in the reader, read a
+            // string and restore the offset.
             .pointer => {
                 const p = try self.readPointer();
-                const current = self.offset;
+
+                const current_offset = self.offset;
                 self.offset = self.data_offset + p;
+
                 const s = self.readString();
-                self.offset = current;
+
+                self.offset = current_offset;
+
                 return s;
             },
             else => unreachable,
         }
-    }
-
-    pub fn readBytes(self: *DataReader) ![]const u8 {
-        try self.assertNextType(.bytes);
-
-        const len = try self.readPayloadSize();
-        const s = self.data[self.offset .. self.offset + len];
-        self.offset += len;
-        return s;
     }
 
     pub fn readUint16(self: *DataReader) !u16 {
@@ -246,25 +249,10 @@ pub const DataReader = struct {
         return accum;
     }
 
-    pub fn readDouble(self: *DataReader) !f64 {
-        try self.assertNextType(.double);
-
-        // Read the offset.
-        self.offset += 1;
-
-        var accum: u64 = 0;
-        for (0..8) |_| {
-            accum <<= 8;
-            accum |= @as(u64, self.data[self.offset]);
-            self.offset += 1;
-        }
-        return @floatFromInt(accum);
-    }
-
     pub fn readUint128(self: *DataReader) !u128 {
         try self.assertNextType(.uint128);
 
-        const len = self.readPayloadSize();
+        const len = try self.readPayloadSize();
         if (len == 0) return 0;
         var accum: u128 = 0;
         for (0..len) |_| {
@@ -273,6 +261,22 @@ pub const DataReader = struct {
             self.offset += 1;
         }
         return accum;
+    }
+
+    pub fn readDouble(self: *DataReader) !f64 {
+        try self.assertNextType(.double);
+
+        // Read the offset.
+        self.offset += 1;
+
+        // Accumulate as u64, then convert to f64.
+        var accum: u64 = 0;
+        for (0..8) |_| {
+            accum <<= 8;
+            accum |= @as(u64, self.data[self.offset]);
+            self.offset += 1;
+        }
+        return @floatFromInt(accum);
     }
 };
 
