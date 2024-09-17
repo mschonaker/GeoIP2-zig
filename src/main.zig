@@ -95,7 +95,12 @@ fn dispatchConnection(allocator: Allocator, connection: std.net.Server.Connectio
             },
         });
 
+        const start = std.time.nanoTimestamp();
+
         try mmdb.lookupIpV4(parsed, response.writer());
+
+        std.debug.print("Took: {d}ns \n", .{std.time.nanoTimestamp() - start});
+
         try response.end();
     } else if (std.mem.startsWith(u8, request.head.target, ipv6_prefix)) {
         const parsed = parseIpV6(request.head.target[ipv6_prefix.len..]) catch {
@@ -113,7 +118,12 @@ fn dispatchConnection(allocator: Allocator, connection: std.net.Server.Connectio
             },
         });
 
+        const start = std.time.nanoTimestamp();
+
         try mmdb.lookupIpV6(parsed, response.writer());
+
+        std.debug.print("Took: {d}ns \n", .{std.time.nanoTimestamp() - start});
+
         try response.end();
     } else {
         try request.respond("Unknown target", .{ .status = .bad_request });
