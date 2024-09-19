@@ -17,7 +17,7 @@ pub const MMDBFile = struct {
     metadata_offset: usize,
     nodes_offset: usize,
     metadata: Metadata,
-    comptime enable_assertions: bool = true,
+    comptime enable_assertions: bool = false,
     allocator: Allocator,
 
     pub fn init(data: []const u8, alloc: Allocator, comptime enable_assertions: bool) !MMDBFile {

@@ -10,12 +10,16 @@ const embeded = @embedFile("GeoLite2-City.mmdb");
 
 const MMDBFile = mmdb_mmdb.MMDBFile;
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+const enable_assertions = false;
 
-    var mmdb = try mmdb_mmdb.MMDBFile.init(embeded, allocator, true);
+pub fn main() !void {
+
+    // The allocator is only necessary for a couple of strings in the metadata
+    // structure. So we can keep it limited (or skip that parsing altogether).
+    var buffer: [2 * 1024]u8 = undefined;
+    var allocator = std.heap.FixedBufferAllocator.init(&buffer);
+
+    var mmdb = try mmdb_mmdb.MMDBFile.init(embeded, allocator.allocator(), enable_assertions);
     defer mmdb.deinit();
 
     var stdout = io.bufferedWriter(io.getStdOut().writer());
@@ -53,21 +57,16 @@ pub fn main() !void {
     while (true) {
         const connection = try listener.accept();
 
-        // We are going to delegate the connection and also delegate an arena.
-        var arena = std.heap.ArenaAllocator.init(allocator);
-        defer arena.deinit();
-
-        dispatchConnection(arena.allocator(), connection, mmdb) catch |e| {
+        dispatchConnection(connection, mmdb) catch |e| {
             try stderr.writer().print("An unexpected error happened while listening to connection: {s}\n", .{@errorName(e)});
         };
     }
 }
 
-fn dispatchConnection(allocator: Allocator, connection: std.net.Server.Connection, mmdb: MMDBFile) !void {
+fn dispatchConnection(connection: std.net.Server.Connection, mmdb: MMDBFile) !void {
     // We own the connection now, we close it once we're done.
     defer connection.stream.close();
 
-    _ = allocator;
     var request_buff = [_]u8{undefined} ** 1024;
     var response_buff = [_]u8{undefined} ** 1024;
 
@@ -95,11 +94,9 @@ fn dispatchConnection(allocator: Allocator, connection: std.net.Server.Connectio
             },
         });
 
-        const start = std.time.nanoTimestamp();
-
+        const start = @divTrunc(std.time.nanoTimestamp(), 1000);
         try mmdb.lookupIpV4(parsed, response.writer());
-
-        std.debug.print("Took: {d}ns \n", .{std.time.nanoTimestamp() - start});
+        std.debug.print("Took: {d} μs \n", .{@divTrunc(std.time.nanoTimestamp(), 1000) - start});
 
         try response.end();
     } else if (std.mem.startsWith(u8, request.head.target, ipv6_prefix)) {
@@ -118,11 +115,9 @@ fn dispatchConnection(allocator: Allocator, connection: std.net.Server.Connectio
             },
         });
 
-        const start = std.time.nanoTimestamp();
-
+        const start = @divTrunc(std.time.nanoTimestamp(), 1000);
         try mmdb.lookupIpV6(parsed, response.writer());
-
-        std.debug.print("Took: {d}ns \n", .{std.time.nanoTimestamp() - start});
+        std.debug.print("Took: {d} μs \n", .{@divTrunc(std.time.nanoTimestamp(), 1000) - start});
 
         try response.end();
     } else {
@@ -133,9 +128,7 @@ fn dispatchConnection(allocator: Allocator, connection: std.net.Server.Connectio
 
 fn parseIpV4(str: []const u8) ![4]u8 {
     const a = try std.net.Address.parseIp4(str, 0);
-    const x = a.in.sa.addr;
-    const b = std.mem.asBytes(&x);
-    // std.debug.print("{d}", .{b.*});
+    const b = std.mem.asBytes(&a.in.sa.addr);
     return b.*;
 }
 

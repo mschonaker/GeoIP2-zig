@@ -21,7 +21,7 @@ pub const DataReader = struct {
     data: []const u8,
     offset: usize = 0,
     data_offset: usize = undefined,
-    comptime enable_assertions: bool = true,
+    comptime enable_assertions: bool = false,
 
     pub fn decodeNextType(self: *DataReader) DataType {
         // loop: while (true) {

@@ -1,3 +1,7 @@
 .zig-cache
 zig-out
+
+# GeoIP stuff.
 src/*.mmdb
+src/.geoipupdate.lock
+GeoIP.conf
