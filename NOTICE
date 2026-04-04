@@ -1,0 +1,22 @@
+NOTICE
+
+This project includes GeoLite2 data created by MaxMind, available from
+https://www.maxmind.com.
+
+GeoLite2 Database License:
+- Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)
+- Full terms: https://creativecommons.org/licenses/by-sa/4.0/
+- MaxMind GeoLite EULA: https://www.maxmind.com/en/geolite/eula
+
+Required Attribution:
+This product includes GeoLite Data created by MaxMind, available from
+https://www.maxmind.com.
+
+Key Requirements:
+1. Provide attribution when using GeoLite2 data
+2. Use updated databases and destroy old versions within 30 days
+3. Do not use for Fair Credit Reporting Act purposes
+4. Do not rely on data to identify specific households, individuals, or addresses
+5. For commercial redistribution, see MaxMind's Commercial GeoLite License
+
+This project itself is licensed under the MIT License (see LICENSE file).

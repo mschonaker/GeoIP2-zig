@@ -1,0 +1,72 @@
+name: Test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        run: |
+          curl -sSL https://ziglang.org/builds/zig-x86_64-linux-0.16.0-dev.3073+28ae5d415.tar.xz | tar -xJ -C /opt
+          echo "/opt/zig-x86_64-linux-0.16.0-dev.3073+28ae5d415" >> $GITHUB_PATH
+
+      - name: Install test tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq
+          HURL_VERSION=$(curl -s https://api.github.com/repos/Orange-OpenSource/hurl/releases/latest | jq -r '.tag_name')
+          curl -sSL "https://github.com/Orange-OpenSource/hurl/releases/download/${HURL_VERSION}/hurl-${HURL_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz -C /tmp
+          sudo mv /tmp/hurl-${HURL_VERSION}-x86_64-unknown-linux-gnu/bin/hurl /usr/local/bin/hurl
+          sudo mv /tmp/hurl-${HURL_VERSION}-x86_64-unknown-linux-gnu/bin/hurlfmt /usr/local/bin/hurlfmt
+
+      - name: Download GeoIP database
+        env:
+          MAXMIND_LICENSE_KEY: ${{ secrets.MAXMIND_LICENSE_KEY }}
+        run: |
+          if [ -n "$MAXMIND_LICENSE_KEY" ]; then
+            mkdir -p src
+            curl -sSL "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&license_key=${MAXMIND_LICENSE_KEY}&suffix=tar.gz" \
+              -o /tmp/geoip.tar.gz
+            tar -xzf /tmp/geoip.tar.gz -C src --strip-components=1 --wildcards '*/GeoLite2-City.mmdb'
+          else
+            echo "MAXMIND_LICENSE_KEY not set; using existing src/GeoLite2-City.mmdb if present"
+          fi
+
+      - name: Build
+        run: zig build
+
+      - name: Run unit tests
+        run: zig build test
+
+      - name: Install wrk
+        run: sudo apt-get install -y -qq wrk
+
+      - name: Run integration tests
+        run: |
+          ./zig-out/bin/geoip-zig > /dev/null 2>&1 &
+          SERVER_PID=$!
+          sleep 1
+          trap "kill $SERVER_PID 2>/dev/null || true" EXIT
+          for f in tests/*.hurl; do
+            echo "Testing $f..."
+            hurl --json "$f" | jq -e '.success == true'
+          done
+
+      - name: Run load tests
+        run: |
+          ./zig-out/bin/geoip-zig > /dev/null 2>&1 &
+          SERVER_PID=$!
+          sleep 1
+          trap "kill $SERVER_PID 2>/dev/null || true" EXIT
+          bash scripts/run_load_tests.sh

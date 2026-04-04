@@ -1,25 +1,27 @@
-const std = @import("std");
+// GeoIP2-zig - MIT License
+// MMDB data writer - serializes binary data to JSON
 
-const mmdb_data_reader = @import("data_reader.zig");
-const DataReader = mmdb_data_reader.DataReader;
+const DataReader = @import("data_reader.zig").DataReader;
 
-const WriterError = anyerror;
+/// Error type for data writer operations
+pub const Error = anyerror;
 
-const ReaderError = mmdb_data_reader.Error;
-
-pub const Error = WriterError || ReaderError;
-
-/// Factory method of a **DataWriter**.
+/// Create a new DataWriter for writing data at a given offset
+///
+/// Parameters:
+/// - data_offset: Base offset for resolving pointer values
 pub fn dataWriter(data_offset: usize) DataWriter {
-    return .{
-        .data_offset = data_offset,
-    };
+    return .{ .data_offset = data_offset };
 }
 
-/// Copies data from the reader to the writer.
+/// DataWriter converts binary MMDB data to JSON.
+/// It reads data types from a DataReader and writes them
+/// to a JSON writer (e.g., std.json.Stringify).
 pub const DataWriter = struct {
+    /// Base offset used for resolving pointers
     data_offset: usize,
 
+    /// Main entry point: write any data type to the writer
     pub fn writeObject(self: DataWriter, reader: *DataReader, writer: anytype) Error!void {
         const dt = reader.decodeNextType();
         switch (dt) {
@@ -37,42 +39,32 @@ pub const DataWriter = struct {
         }
     }
 
+    /// Write a pointer by resolving it to the actual data.
+    /// Pointers contain an offset from the data section start.
     pub fn writePointer(self: DataWriter, reader: *DataReader, writer: anytype) Error!void {
         const pointer: usize = try reader.readPointer();
-
-        // Copy the current offset. Point the reader to the value read.
+        // Save current position, jump to pointer location, read data, restore position
         const current_offset = reader.offset;
         reader.offset = self.data_offset + pointer;
-
-        // Read anything.
         try self.writeObject(reader, writer);
-
-        // Restore the offset.
         reader.offset = current_offset;
     }
 
+    /// Write a map (key-value pairs) as JSON object
     pub fn writeMap(self: DataWriter, reader: *DataReader, writer: anytype) Error!void {
         try reader.assertNextType(.map);
-
-        // read the number of entries.
         const l = try reader.readPayloadSize();
-
-        // Tell the writer to start an object.
         try writer.beginObject();
         for (0..l) |_| {
-
-            // Keys can be a string or a pointer to a string.
+            // Map keys can be strings or pointers to strings
             const key: []const u8 = try reader.readMapKey();
-
-            // Write the key, then the object.
             try writer.objectField(key);
             try self.writeObject(reader, writer);
         }
-
-        // Tell the writer to end the object.
         try writer.endObject();
     }
 
+    /// Write an array as JSON array
     pub fn writeArray(self: DataWriter, reader: *DataReader, writer: anytype) Error!void {
         try reader.assertNextType(.array);
         const l = try reader.readPayloadSize();
@@ -83,39 +75,45 @@ pub const DataWriter = struct {
         try writer.endArray();
     }
 
+    /// Write a boolean value.
+    /// In MMDB, booleans are encoded with size 0 = false, size > 0 = true
     pub fn writeBoolean(_: DataWriter, reader: *DataReader, writer: anytype) Error!void {
         try reader.assertNextType(.boolean);
-
-        // Booleans are encoded in the payload size.
         const l = try reader.readPayloadSize();
         try writer.write(l != 0);
     }
 
+    /// Write a UTF-8 string
     pub fn writeString(_: DataWriter, reader: *DataReader, writer: anytype) Error!void {
         const s: []const u8 = try reader.readString();
         try writer.write(s);
     }
 
+    /// Write an unsigned 16-bit integer
     pub fn writeUint16(_: DataWriter, reader: *DataReader, writer: anytype) Error!void {
         const u: u16 = try reader.readUint16();
         try writer.write(u);
     }
 
+    /// Write an unsigned 32-bit integer
     pub fn writeUint32(_: DataWriter, reader: *DataReader, writer: anytype) Error!void {
         const u: u32 = try reader.readUint32();
         try writer.write(u);
     }
 
+    /// Write an unsigned 64-bit integer
     pub fn writeUint64(_: DataWriter, reader: *DataReader, writer: anytype) Error!void {
         const u: u64 = try reader.readUint64();
         try writer.write(u);
     }
 
+    /// Write an unsigned 128-bit integer
     pub fn writeUint128(_: DataWriter, reader: *DataReader, writer: anytype) Error!void {
         const u: u128 = try reader.readUint128();
         try writer.write(u);
     }
 
+    /// Write a 64-bit IEEE 754 double-precision float
     pub fn writeDouble(_: DataWriter, reader: *DataReader, writer: anytype) Error!void {
         const u: f64 = try reader.readDouble();
         try writer.write(u);

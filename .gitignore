@@ -5,3 +5,6 @@ zig-out
 src/*.mmdb
 src/.geoipupdate.lock
 GeoIP.conf
+
+# Generated load test reports (optional - uncomment to ignore)
+# scripts/load_test_report.md

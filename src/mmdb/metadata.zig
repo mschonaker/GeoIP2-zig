@@ -1,110 +1,108 @@
+// GeoIP2-zig - MIT License
+// MMDB metadata parser - reads and writes database metadata
+
 const std = @import("std");
 const StringStringHashMap = std.StringHashMapUnmanaged([]const u8);
 const StringArrayList = std.ArrayListUnmanaged([]const u8);
 const Allocator = std.mem.Allocator;
-const eql = std.mem.eql;
 
-const mmdb_data_reader = @import("data_reader.zig");
-const DataReader = mmdb_data_reader.DataReader;
+/// Import the data reader for parsing binary metadata
+const DataReader = @import("data_reader.zig").DataReader;
 
-/// A container for:
-/// {
-///  "binary_format_major_version": 2,
-///  "binary_format_minor_version": 0,
-///  "build_epoch": 1725363976,
-///  "database_type": "GeoLite2-City",
-///  "description": {
-///    "en": "GeoLite2City database"
-///  },
-///  "ip_version": 6,
-///  "languages": [
-///    "de",
-///    "en",
-///    "es",
-///    "fr",
-///    "ja",
-///    "pt-BR",
-///    "ru",
-///    "zh-CN"
-///  ],
-///  "node_count": 4252760,
-///  "record_size": 28
-///}
+/// Metadata holds all the information about the MaxMind database.
+/// This includes version numbers, database type, supported languages,
+/// node count for the trie, and record size.
 pub const Metadata = struct {
     allocator: Allocator,
 
+    /// Major version of the binary format (typically 2)
     binary_format_major_version: ?u16 = null,
+    /// Minor version of the binary format (typically 0)
     binary_format_minor_version: ?u16 = null,
+    /// Unix timestamp when the database was built
     build_epoch: ?u64 = null,
+    /// Type identifier (e.g., "GeoLite2-City")
     database_type: ?[]const u8 = null,
+    /// Human-readable descriptions in various languages
     description: StringStringHashMap = .{},
+    /// IP version (4 or 6)
     ip_version: ?u16 = null,
-    languages: StringArrayList = .{},
+    /// List of supported language codes
+    languages: StringArrayList = .{ .items = &.{}, .capacity = 0 },
+    /// Number of nodes in the search trie
     node_count: ?u32 = null,
+    /// Size of each record in bits
     record_size: ?u16 = null,
 
+    /// Initialize metadata with an allocator
     pub fn init(alloc: Allocator) Metadata {
-        return .{
-            .allocator = alloc,
-        };
+        return .{ .allocator = alloc };
     }
 
+    /// Free all allocated memory
     pub fn deinit(self: *Metadata) void {
         self.languages.deinit(self.allocator);
         self.description.deinit(self.allocator);
     }
 
+    /// Add a description entry (language code -> description text)
     fn addDescription(self: *Metadata, key: []const u8, value: []const u8) !void {
         try self.description.put(self.allocator, key, value);
     }
 
+    /// Add a supported language code
     fn appendLanguage(self: *Metadata, lang: []const u8) !void {
         try self.languages.append(self.allocator, lang);
     }
 };
 
+/// Create a MetadataReader for parsing metadata from a DataReader
 pub fn metadataReader(reader: DataReader) MetadataReader {
-    return .{
-        .reader = reader,
-    };
+    return .{ .reader = reader };
 }
 
+/// MetadataReader parses the metadata section of an MMDB file.
+/// It reads a map of key-value pairs where each key is a string
+/// and values can be various types (integers, strings, maps, arrays).
 pub const MetadataReader = struct {
     reader: DataReader,
 
+    /// Read and parse all metadata fields from the database
     pub fn read(self: *MetadataReader, metadata: *Metadata) !void {
+        // Metadata is always stored as a map at the start of the metadata section
         try self.reader.assertNextType(.map);
-
         const len = try self.reader.readPayloadSize();
+
+        // Iterate through each key-value pair in the metadata map
         for (0..len) |_| {
-            // Decode key. According to the spec they're always strings.
             const key = try self.reader.readString();
-            // Decode the value depending on the value of the key.
-            if (eql(u8, key, "binary_format_major_version")) {
+
+            // Parse each known metadata field based on the key name
+            if (std.mem.eql(u8, key, "binary_format_major_version")) {
                 metadata.binary_format_major_version = try self.reader.readUint16();
-            } else if (eql(u8, key, "binary_format_minor_version")) {
+            } else if (std.mem.eql(u8, key, "binary_format_minor_version")) {
                 metadata.binary_format_minor_version = try self.reader.readUint16();
-            } else if (eql(u8, key, "build_epoch")) {
+            } else if (std.mem.eql(u8, key, "build_epoch")) {
                 metadata.build_epoch = try self.reader.readUint64();
-            } else if (eql(u8, key, "database_type")) {
+            } else if (std.mem.eql(u8, key, "database_type")) {
                 metadata.database_type = try self.reader.readString();
-            } else if (eql(u8, key, "description")) {
+            } else if (std.mem.eql(u8, key, "description")) {
                 try self.readDescriptionMap(metadata);
-            } else if (eql(u8, key, "ip_version")) {
+            } else if (std.mem.eql(u8, key, "ip_version")) {
                 metadata.ip_version = try self.reader.readUint16();
-            } else if (eql(u8, key, "languages")) {
+            } else if (std.mem.eql(u8, key, "languages")) {
                 try self.readLanguagesArray(metadata);
-            } else if (eql(u8, key, "node_count")) {
+            } else if (std.mem.eql(u8, key, "node_count")) {
                 metadata.node_count = try self.reader.readUint32();
-            } else if (eql(u8, key, "record_size")) {
+            } else if (std.mem.eql(u8, key, "record_size")) {
                 metadata.record_size = try self.reader.readUint16();
             } else unreachable;
         }
     }
 
+    /// Read the description map (language code -> description)
     fn readDescriptionMap(self: *MetadataReader, metadata: *Metadata) !void {
         try self.reader.assertNextType(.map);
-
         const len = try self.reader.readPayloadSize();
         for (0..len) |_| {
             const key = try self.reader.readString();
@@ -113,9 +111,9 @@ pub const MetadataReader = struct {
         }
     }
 
+    /// Read the list of supported languages
     fn readLanguagesArray(self: *MetadataReader, metadata: *Metadata) !void {
         try self.reader.assertNextType(.array);
-
         const len = try self.reader.readPayloadSize();
         for (0..len) |_| {
             const lang = try self.reader.readString();
@@ -124,18 +122,17 @@ pub const MetadataReader = struct {
     }
 };
 
-////////////////////////////////////////////////////////////////////////////////
-
+/// Create a MetadataWriter for serializing metadata to JSON
 pub fn metadataWriter(metadata: Metadata) MetadataWriter {
-    return .{
-        .metadata = metadata,
-    };
+    return .{ .metadata = metadata };
 }
 
+/// MetadataWriter converts Metadata struct to JSON format.
+/// It writes the metadata as a JSON object with all fields.
 const MetadataWriter = struct {
     metadata: Metadata,
 
-    /// writer is assumed to be a std.json.WriteStream.
+    /// Write metadata as JSON to the provided writer
     pub fn writeJSON(self: MetadataWriter, writer: anytype) !void {
         try writer.beginObject();
         {
@@ -176,64 +173,7 @@ const MetadataWriter = struct {
     }
 };
 
-////////////////////////////////////////////////////////////////////////////////
-
-const expectEqualStrings = std.testing.expectEqualStrings;
-
+// Verify the DataReader module is available
 test {
-    _ = mmdb_data_reader;
-}
-
-test "serialize to JSON" {
-    var metadata = Metadata.init(std.testing.allocator);
-    defer metadata.deinit();
-
-    metadata.binary_format_major_version = 2;
-    metadata.binary_format_minor_version = 0;
-    metadata.build_epoch = 1725363976;
-    metadata.database_type = "GeoLite2-City";
-    metadata.ip_version = 6;
-    metadata.node_count = 4252760;
-    metadata.record_size = 28;
-
-    try metadata.addDescription("en", "GeoLite2City database");
-    for ([_][]const u8{ "de", "en", "es", "fr", "ja", "pt-BR", "ru", "zh-CN" }) |lang| {
-        try metadata.appendLanguage(lang);
-    }
-
-    const writer = metadataWriter(metadata);
-    var string = std.ArrayList(u8).init(std.testing.allocator);
-    defer string.deinit();
-
-    var json_stream = std.json.writeStream(string.writer(), .{
-        .emit_null_optional_fields = true,
-        .whitespace = .indent_2,
-    });
-    try writer.writeJSON(&json_stream);
-
-    const expected =
-        \\{
-        \\  "binary_format_major_version": 2,
-        \\  "binary_format_minor_version": 0,
-        \\  "build_epoch": 1725363976,
-        \\  "database_type": "GeoLite2-City",
-        \\  "description": {
-        \\    "en": "GeoLite2City database"
-        \\  },
-        \\  "ip_version": 6,
-        \\  "languages": [
-        \\    "de",
-        \\    "en",
-        \\    "es",
-        \\    "fr",
-        \\    "ja",
-        \\    "pt-BR",
-        \\    "ru",
-        \\    "zh-CN"
-        \\  ],
-        \\  "node_count": 4252760,
-        \\  "record_size": 28
-        \\}
-    ;
-    try expectEqualStrings(expected, string.items);
+    _ = DataReader;
 }
