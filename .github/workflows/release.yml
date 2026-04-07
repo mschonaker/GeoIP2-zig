@@ -29,6 +29,11 @@ jobs:
           tar -xf /tmp/zig.tar.xz -C /tmp
           echo "/tmp/zig-x86_64-linux-${ZIG_VERSION}" >> $GITHUB_PATH
 
+      - name: Download GeoIP database
+        env:
+          MAXMIND_LICENSE_KEY: ${{ secrets.MAXMIND_LICENSE_KEY }}
+        run: zig build download-db
+
       - name: Build for ${{ matrix.target }}
         run: zig build -Dtarget=${{ matrix.target }} --prefix /tmp/geoip-build
 
