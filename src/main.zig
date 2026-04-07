@@ -1,4 +1,4 @@
-// GeoIP2-zig - MIT License
+// GeoIP2-zig
 // HTTP server with MaxMind MMDB geolocation lookup
 // Endpoints: /ipv4/<ip> and /ipv6/<ip>
 

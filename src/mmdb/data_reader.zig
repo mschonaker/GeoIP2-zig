@@ -1,4 +1,4 @@
-// GeoIP2-zig - MIT License
+// GeoIP2-zig
 // MMDB binary data reader - parses the MaxMind database binary format
 
 const std = @import("std");

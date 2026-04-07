@@ -1,4 +1,4 @@
-// GeoIP2-zig - MIT License
+// GeoIP2-zig
 // MMDB parser - main API for IP geolocation lookups
 
 const std = @import("std");

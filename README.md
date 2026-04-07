@@ -1,7 +1,7 @@
 # GeoIP2-zig
 
 [![Zig](https://img.shields.io/badge/Zig-0.16+-yellow?logo=zig)](https://ziglang.org/)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
 A hand-rolled implementation of the MaxMind GeoIP2 binary format in Zig. No external dependencies for the core logic — just Zig's standard library and a 40MB embedded database. The project explores low-level systems programming: binary protocol parsing, Patricia trie traversal, and Zig's async I/O model.
 
@@ -104,4 +104,4 @@ The interesting files to read:
 
 ## License
 
-MIT License. See the [LICENSE](LICENSE) file and the [NOTICE](NOTICE) file for MaxMind database attribution requirements.
+GPLv3 License. See the [LICENSE](LICENSE) file and the [NOTICE](NOTICE) file for MaxMind database attribution requirements.

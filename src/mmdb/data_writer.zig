@@ -1,4 +1,4 @@
-// GeoIP2-zig - MIT License
+// GeoIP2-zig
 // MMDB data writer - serializes binary data to JSON
 
 const DataReader = @import("data_reader.zig").DataReader;

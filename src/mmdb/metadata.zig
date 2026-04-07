@@ -1,4 +1,4 @@
-// GeoIP2-zig - MIT License
+// GeoIP2-zig
 // MMDB metadata parser - reads and writes database metadata
 
 const std = @import("std");

@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-linux-gnu
+          - x86_64-macos-none
+          - aarch64-macos-none
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get tag
+        id: get_tag
+        run: echo "TAG=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Setup Zig
+        run: |
+          ZIG_VERSION=$(cat ${{ github.workspace }}/.zigversion | sed 's/-dev.*//')
+          curl -L -o /tmp/zig.tar.xz "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz"
+          tar -xf /tmp/zig.tar.xz -C /tmp
+          echo "/tmp/zig-linux-x86_64-${ZIG_VERSION}" >> $GITHUB_PATH
+
+      - name: Build for ${{ matrix.target }}
+        run: zig build -Dtarget=${{ matrix.target }} --prefix /tmp/geoip-build
+
+      - name: Create release package
+        working-directory: /tmp/geoip-build
+        run: |
+          mkdir -p geoip-zig-${{ steps.get_tag.outputs.TAG }}-${{ matrix.target }}
+          cp bin/geoip-zig geoip-zig-${{ steps.get_tag.outputs.TAG }}-${{ matrix.target }}/
+          cp ${{ github.workspace }}/LICENSE geoip-zig-${{ steps.get_tag.outputs.TAG }}-${{ matrix.target }}/
+          cp ${{ github.workspace }}/NOTICE geoip-zig-${{ steps.get_tag.outputs.TAG }}-${{ matrix.target }}/
+          cp ${{ github.workspace }}/README.md geoip-zig-${{ steps.get_tag.outputs.TAG }}-${{ matrix.target }}/
+          zip -r geoip-zig-${{ steps.get_tag.outputs.TAG }}-${{ matrix.target }}.zip geoip-zig-${{ steps.get_tag.outputs.TAG }}-${{ matrix.target }}/
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: /tmp/geoip-build/geoip-zig-${{ steps.get_tag.outputs.TAG }}-${{ matrix.target }}.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Get tag
+        id: get_tag
+        run: echo "TAG=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd artifacts
+          gh release create ${{ steps.get_tag.outputs.TAG }} \
+            --title "GeoIP2-zig ${{ steps.get_tag.outputs.TAG }}" \
+            --generate-notes \
+            release-*/geoip-zig-*.zip
