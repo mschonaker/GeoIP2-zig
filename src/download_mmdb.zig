@@ -7,10 +7,14 @@ const OUTPUT_PATH = "src/GeoLite2-City.mmdb";
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
 
+    // Track if we need to free the license key
+    var license_key_owned = false;
+
     // Get license key from environment or GeoIP.conf
     const license_key = blk: {
         // First try environment variable
         if (init.minimal.environ.getAlloc(allocator, "MAXMIND_LICENSE_KEY")) |key| {
+            license_key_owned = true;
             print("Using license key from MAXMIND_LICENSE_KEY env var\n", .{});
             break :blk key;
         } else |_| {}
@@ -44,6 +48,7 @@ pub fn main(init: std.process.Init) !void {
         print("Get a free license key at: https://www.maxmind.com/en/geolite2/signup\n", .{});
         std.process.exit(1);
     };
+    defer if (license_key_owned) allocator.free(license_key);
 
     // Build URL with license key
     const url = try std.fmt.allocPrint(allocator, "{s}&license_key={s}", .{ GEOLITE2_CITY_URL, license_key });
