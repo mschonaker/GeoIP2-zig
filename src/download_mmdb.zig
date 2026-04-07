@@ -4,23 +4,24 @@ const print = std.debug.print;
 const GEOLITE2_CITY_URL = "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&suffix=tar.gz";
 const OUTPUT_PATH = "src/GeoLite2-City.mmdb";
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
 
     // Get license key from environment or GeoIP.conf
     const license_key = blk: {
         // First try environment variable
-        if (std.posix.getenv("MAXMIND_LICENSE_KEY")) |key| {
+        if (init.minimal.environ.getAlloc(allocator, "MAXMIND_LICENSE_KEY")) |key| {
             print("Using license key from MAXMIND_LICENSE_KEY env var\n", .{});
             break :blk key;
-        }
+        } else |_| {}
 
         // Try reading from GeoIP.conf
-        if (std.fs.cwd().openFile("GeoIP.conf", .{})) |conf_file| {
-            defer conf_file.close();
-            const contents = conf_file.readToEndAlloc(allocator, 4096) catch null;
+        const cwd = std.Io.Dir.cwd();
+        if (cwd.openFile(init.io, "GeoIP.conf", .{})) |conf_file| {
+            defer conf_file.close(init.io);
+            var buf: [4096]u8 = undefined;
+            var file_reader = conf_file.reader(init.io, &buf);
+            const contents = file_reader.interface.allocRemaining(allocator, std.Io.Limit.limited(4096)) catch null;
             if (contents) |data| {
                 defer allocator.free(data);
                 var lines = std.mem.splitSequence(u8, data, "\n");
@@ -41,7 +42,7 @@ pub fn main() !void {
         print("  1. Set environment variable: export MAXMIND_LICENSE_KEY=your_key\n", .{});
         print("  2. Edit GeoIP.conf with your LicenseKey\n\n", .{});
         print("Get a free license key at: https://www.maxmind.com/en/geolite2/signup\n", .{});
-        std.posix.exit(1);
+        std.process.exit(1);
     };
 
     // Build URL with license key
@@ -51,13 +52,17 @@ pub fn main() !void {
     print("Downloading GeoLite2-City database from MaxMind...\n", .{});
 
     // Create HTTP client
-    var client = std.http.Client{ .allocator = allocator };
+    var client = std.http.Client{ .allocator = allocator, .io = init.io };
     defer client.deinit();
 
     // Download to temp file
     const temp_path = "temp_download.tar.gz";
-    const file = try std.fs.cwd().createFile(temp_path, .{});
-    var file_writer = file.writer(&.{});
+    const cwd = std.Io.Dir.cwd();
+    const file = try cwd.createFile(init.io, temp_path, .{});
+    defer file.close(init.io);
+
+    var write_buf: [8192]u8 = undefined;
+    var file_writer = file.writer(init.io, &write_buf);
     const result = try client.fetch(.{
         .location = .{ .url = url },
         .response_writer = &file_writer.interface,
@@ -66,35 +71,35 @@ pub fn main() !void {
     if (result.status != .ok) {
         print("Error: HTTP request failed with status: {}\n", .{result.status});
         print("Make sure your MAXMIND_LICENSE_KEY is valid.\n", .{});
-        std.posix.exit(1);
+        std.process.exit(1);
     }
 
-    const file_size = try file.getEndPos();
-    print("Downloaded {} bytes\n", .{file_size});
-
-    // Close file and reopen for reading
-    file.close();
+    try file_writer.interface.flush();
+    const file_stat = try file.stat(init.io);
+    print("Downloaded {} bytes\n", .{file_stat.size});
 
     // Read the downloaded file
-    const input_file = try std.fs.cwd().openFile(temp_path, .{});
-    defer input_file.close();
+    const input_file = try cwd.openFile(init.io, temp_path, .{});
+    defer input_file.close(init.io);
 
-    const data = try input_file.readToEndAlloc(allocator, 100 * 1024 * 1024); // 100MB max
+    var read_buf: [8192]u8 = undefined;
+    var file_reader = input_file.reader(init.io, &read_buf);
+    const data = try file_reader.interface.allocRemaining(allocator, std.Io.Limit.limited(100 * 1024 * 1024)); // 100MB max
     defer allocator.free(data);
 
     // Extract .mmdb from tar.gz
     print("Extracting GeoLite2-City.mmdb...\n", .{});
-    try extractMmdbFromTarGz(allocator, data, OUTPUT_PATH);
+    try extractMmdbFromTarGz(allocator, data, OUTPUT_PATH, cwd, init.io);
 
     // Clean up temp file
-    std.fs.cwd().deleteFile(temp_path) catch {};
+    cwd.deleteFile(init.io, temp_path) catch {};
 
     print("Successfully saved to {s}\n", .{OUTPUT_PATH});
 }
 
-fn extractMmdbFromTarGz(allocator: std.mem.Allocator, data: []const u8, output_path: []const u8) !void {
-    // Decompress gzip using the new flate API
-    var input_reader = std.io.Reader.fixed(data);
+fn extractMmdbFromTarGz(allocator: std.mem.Allocator, data: []const u8, output_path: []const u8, cwd: std.Io.Dir, io: std.Io) !void {
+    // Decompress gzip
+    var input_reader = std.Io.Reader.fixed(data);
     var decompress_buffer: [std.compress.flate.max_window_len]u8 = undefined;
     var decompressor = std.compress.flate.Decompress.init(&input_reader, .gzip, &decompress_buffer);
 
@@ -134,9 +139,13 @@ fn extractMmdbFromTarGz(allocator: std.mem.Allocator, data: []const u8, output_p
             const mmdb_data = decompressed[offset .. offset + file_size];
 
             // Write to file
-            const out_file = try std.fs.cwd().createFile(output_path, .{});
-            defer out_file.close();
-            try out_file.writeAll(mmdb_data);
+            const out_file = try cwd.createFile(io, output_path, .{});
+            defer out_file.close(io);
+
+            var write_buf: [8192]u8 = undefined;
+            var writer = out_file.writer(io, &write_buf);
+            try writer.interface.writeAll(mmdb_data);
+            try writer.interface.flush();
 
             return;
         }
