@@ -24,10 +24,10 @@ jobs:
 
       - name: Setup Zig
         run: |
-          ZIG_VERSION=$(cat ${{ github.workspace }}/.zigversion | sed 's/-dev.*//')
-          curl -L -o /tmp/zig.tar.xz "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz"
+          ZIG_VERSION=$(cat ${{ github.workspace }}/.zigversion)
+          curl -L -o /tmp/zig.tar.xz "https://ziglang.org/builds/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
           tar -xf /tmp/zig.tar.xz -C /tmp
-          echo "/tmp/zig-linux-x86_64-${ZIG_VERSION}" >> $GITHUB_PATH
+          echo "/tmp/zig-x86_64-linux-${ZIG_VERSION}" >> $GITHUB_PATH
 
       - name: Build for ${{ matrix.target }}
         run: zig build -Dtarget=${{ matrix.target }} --prefix /tmp/geoip-build

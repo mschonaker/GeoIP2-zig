@@ -17,8 +17,9 @@ jobs:
 
       - name: Install Zig
         run: |
-          curl -sSL https://ziglang.org/builds/zig-x86_64-linux-0.16.0-dev.3073+28ae5d415.tar.xz | tar -xJ -C /opt
-          echo "/opt/zig-x86_64-linux-0.16.0-dev.3073+28ae5d415" >> $GITHUB_PATH
+          ZIG_VERSION=$(cat .zigversion)
+          curl -sSL https://ziglang.org/builds/zig-x86_64-linux-${ZIG_VERSION}.tar.xz | tar -xJ -C /opt
+          echo "/opt/zig-x86_64-linux-${ZIG_VERSION}" >> $GITHUB_PATH
 
       - name: Install test tools
         run: |
