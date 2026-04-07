@@ -10,10 +10,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - x86_64-linux-gnu
-          - x86_64-macos-none
-          - aarch64-macos-none
+        include:
+          - target: x86_64-linux-gnu
+            filename: x86_64-linux-gnu
+          - target: x86_64-macos-none
+            filename: x86_64-macos
+          - target: aarch64-macos-none
+            filename: aarch64-macos
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -40,18 +43,18 @@ jobs:
       - name: Create release package
         working-directory: /tmp/geoip-build
         run: |
-          mkdir -p geoip-zig-${{ steps.get_tag.outputs.TAG }}-${{ matrix.target }}
-          cp bin/geoip-zig geoip-zig-${{ steps.get_tag.outputs.TAG }}-${{ matrix.target }}/
-          cp ${{ github.workspace }}/LICENSE geoip-zig-${{ steps.get_tag.outputs.TAG }}-${{ matrix.target }}/
-          cp ${{ github.workspace }}/NOTICE geoip-zig-${{ steps.get_tag.outputs.TAG }}-${{ matrix.target }}/
-          cp ${{ github.workspace }}/README.md geoip-zig-${{ steps.get_tag.outputs.TAG }}-${{ matrix.target }}/
-          zip -r geoip-zig-${{ steps.get_tag.outputs.TAG }}-${{ matrix.target }}.zip geoip-zig-${{ steps.get_tag.outputs.TAG }}-${{ matrix.target }}/
+          mkdir -p geoip-zig-${{ steps.get_tag.outputs.TAG }}-${{ matrix.filename }}
+          cp bin/geoip-zig geoip-zig-${{ steps.get_tag.outputs.TAG }}-${{ matrix.filename }}/
+          cp ${{ github.workspace }}/LICENSE geoip-zig-${{ steps.get_tag.outputs.TAG }}-${{ matrix.filename }}/
+          cp ${{ github.workspace }}/NOTICE geoip-zig-${{ steps.get_tag.outputs.TAG }}-${{ matrix.filename }}/
+          cp ${{ github.workspace }}/README.md geoip-zig-${{ steps.get_tag.outputs.TAG }}-${{ matrix.filename }}/
+          zip -r geoip-zig-${{ steps.get_tag.outputs.TAG }}-${{ matrix.filename }}.zip geoip-zig-${{ steps.get_tag.outputs.TAG }}-${{ matrix.filename }}/
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-${{ matrix.target }}
-          path: /tmp/geoip-build/geoip-zig-${{ steps.get_tag.outputs.TAG }}-${{ matrix.target }}.zip
+          name: release-${{ matrix.filename }}
+          path: /tmp/geoip-build/geoip-zig-${{ steps.get_tag.outputs.TAG }}-${{ matrix.filename }}.zip
 
   release:
     needs: build
