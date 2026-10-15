@@ -121,7 +121,7 @@ fn extractMmdbFromTarGz(allocator: std.mem.Allocator, data: []const u8, output_p
         offset += 512;
 
         // Check for end of archive (all zeros)
-        if (std.mem.eql(u8, header[0..100], &[_]u8{0} ** 100)) {
+        if (std.mem.allEqual(u8, header[0..100], 0)) {
             break;
         }
 

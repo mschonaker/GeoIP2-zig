@@ -10,7 +10,7 @@ const MMDBFile = mmdb.MMDBFile;
 
 // Embed the MaxMind database file at compile time
 const embedded = @embedFile("GeoLite2-City.mmdb");
-const enable_assertions = @import("builtin").mode == .Debug;
+const enable_assertions = @import("builtin").mode == .debug;
 
 /// Main entry point for the GeoIP2 server.
 /// Initializes the async I/O subsystem, loads the MMDB database,
@@ -50,7 +50,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var stdout_writer = Io.File.stdout().writer(io, &stdout_buf);
     const stdout = &stdout_writer.interface;
     try mmdb_file.print(stdout);
-    try stdout.print("\n\n" ++ "-" ** 80 ++ "\n", .{});
+    try stdout.print("\n\n--------------------------------------------------------------------------------\n", .{});
     try stdout.flush();
 
     // Create TCP server socket and start listening

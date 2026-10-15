@@ -28,7 +28,7 @@ pub const Metadata = struct {
     /// IP version (4 or 6)
     ip_version: ?u16 = null,
     /// List of supported language codes
-    languages: StringArrayList = .{ .items = &.{}, .capacity = 0 },
+    languages: StringArrayList = .empty,
     /// Number of nodes in the search trie
     node_count: ?u32 = null,
     /// Size of each record in bits
