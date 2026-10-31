@@ -8,49 +8,57 @@ const zio = @import("zio");
 const mmdb = @import("mmdb/mmdb.zig");
 const MMDBFile = mmdb.MMDBFile;
 
-// Route std.log and std.debug.print through the zio runtime so logging
-// never blocks the event loop
-pub const std_options_debug_io = zio.debug_io;
-
 // Embed the MaxMind database file at compile time
 const embedded = @embedFile("GeoLite2-City.mmdb");
 const enable_assertions = @import("builtin").mode == .debug;
 
 // All runtime memory is fixed-size. The zio runtime heap holds executor lists,
-// task-pool slabs, and thread-pool state; it is sized for the worst case of
-// max_concurrent_connections live fibers. The connection slots below are the
-// only per-request buffers.
-const runtime_heap_bytes = 1 << 20; // 1 MiB
-const max_concurrent_connections = 64;
-const max_request_bytes = 1024; // also caps the HTTP request head size
-const max_response_bytes = 1024;
-const max_body_bytes = 1024;
+// task-pool slabs, and thread-pool state; the connection slots below are the
+// only per-request buffers. Budget: 2 MiB heap + 256 slots x 16 KiB = 6 MiB.
+const runtime_heap_bytes = 2 << 20; // 2 MiB
+const max_concurrent_connections = 256;
+const max_request_bytes = 8 * 1024; // also caps the HTTP request head size
+const max_response_bytes = 4 * 1024;
+const max_body_bytes = 4 * 1024;
 
 /// Fixed pool of per-connection buffers. Claiming a slot bounds the number of
 /// concurrent connections, their fibers, and their memory. A slot is claimed by
 /// the accept fiber and released by the connection fiber when it exits.
 const Connections = struct {
+    const slots_per_word = 64;
+    const num_words = max_concurrent_connections / slots_per_word;
+    comptime {
+        std.debug.assert(max_concurrent_connections % slots_per_word == 0);
+    }
+
     const Slot = struct {
         request_buffer: [max_request_bytes]u8 = undefined,
         response_buffer: [max_response_bytes]u8 = undefined,
         body_buffer: [max_body_bytes]u8 = undefined,
     };
 
-    used_bits: std.atomic.Value(u64) = .init(0),
+    used_words: [num_words]std.atomic.Value(u64) = @splat(.init(0)),
     slots: [max_concurrent_connections]Slot = @splat(.{}),
 
     fn claim(self: *Connections) ?usize {
-        var used = self.used_bits.load(.acquire);
-        while (used != ~@as(u64, 0)) {
-            const index = @ctz(~used);
-            const desired = used | (@as(u64, 1) << @intCast(index));
-            used = self.used_bits.cmpxchgWeak(used, desired, .acq_rel, .acquire) orelse return index;
+        for (&self.used_words, 0..) |*word, word_index| {
+            var used = word.load(.acquire);
+            while (used != ~@as(u64, 0)) {
+                const bit: u6 = @intCast(@ctz(~used));
+                const desired = used | (@as(u64, 1) << bit);
+                if (word.cmpxchgWeak(used, desired, .acq_rel, .acquire) == null) {
+                    return word_index * slots_per_word + bit;
+                }
+                used = word.load(.acquire);
+            }
         }
         return null;
     }
 
     fn release(self: *Connections, index: usize) void {
-        _ = self.used_bits.fetchAnd(~(@as(u64, 1) << @intCast(index)), .release);
+        const word = &self.used_words[index / slots_per_word];
+        const bit: u6 = @intCast(index % slots_per_word);
+        _ = word.fetchAnd(~(@as(u64, 1) << bit), .release);
     }
 };
 
@@ -103,6 +111,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const start_server = getTimeMicros();
     var server = try address.listen(io, .{
         .reuse_address = true,
+        .kernel_backlog = 512,
     });
     defer server.deinit(io);
     const server_usecs = getTimeMicros() - start_server;

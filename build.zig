@@ -8,6 +8,7 @@ pub fn build(b: *std.Build) void {
     const zio = b.dependency("zio", .{
         .target = target,
         .optimize = exe_optimize,
+        .scheduler_metrics = false,
     });
 
     const exe = b.addExecutable(.{
