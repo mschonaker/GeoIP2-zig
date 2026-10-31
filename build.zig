@@ -3,16 +3,23 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const exe_optimize: std.builtin.OptimizeMode = .ReleaseSafe;
+
+    const zio = b.dependency("zio", .{
+        .target = target,
+        .optimize = exe_optimize,
+    });
 
     const exe = b.addExecutable(.{
         .name = "geoip-zig",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
-            .optimize = .ReleaseSafe,
+            .optimize = exe_optimize,
             .link_libc = true,
         }),
     });
+    exe.root_module.addImport("zio", zio.module("zio"));
 
     b.installArtifact(exe);
 
@@ -30,6 +37,7 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
+    exe_unit_tests.root_module.addImport("zio", zio.module("zio"));
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_exe_unit_tests.step);

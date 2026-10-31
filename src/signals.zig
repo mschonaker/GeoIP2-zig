@@ -1,31 +1,13 @@
 const std = @import("std");
+const zio = @import("zio");
 
-var shutdown_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
+/// Suspend the calling fiber until SIGINT or SIGTERM arrives.
+pub fn waitForSignal() void {
+    var sigint = zio.Signal.init(.interrupt) catch return;
+    defer sigint.deinit();
 
-pub fn initSignals() void {
-    {
-        var sa: std.posix.Sigaction = .{
-            .handler = .{ .handler = &handleSignal },
-            .mask = std.posix.sigemptyset(),
-            .flags = 0,
-        };
-        std.posix.sigaction(std.posix.SIG.TERM, &sa, null);
-    }
-    {
-        var sa: std.posix.Sigaction = .{
-            .handler = .{ .handler = &handleSignal },
-            .mask = std.posix.sigemptyset(),
-            .flags = 0,
-        };
-        std.posix.sigaction(std.posix.SIG.INT, &sa, null);
-    }
-}
+    var sigterm = zio.Signal.init(.terminate) catch return;
+    defer sigterm.deinit();
 
-fn handleSignal(sig: std.posix.SIG) callconv(.c) void {
-    _ = sig;
-    shutdown_requested.store(true, .unordered);
-}
-
-pub fn isShutdownRequested() bool {
-    return shutdown_requested.load(.unordered);
+    _ = zio.select(.{ .sigint = &sigint, .sigterm = &sigterm }) catch {};
 }

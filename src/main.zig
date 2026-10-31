@@ -4,23 +4,28 @@
 
 const std = @import("std");
 const Io = std.Io;
+const zio = @import("zio");
 const mmdb = @import("mmdb/mmdb.zig");
 const signals = @import("signals.zig");
 const MMDBFile = mmdb.MMDBFile;
+
+// Route std.log and std.debug.print through the zio runtime so logging
+// never blocks the event loop
+pub const std_options_debug_io = zio.debug_io;
 
 // Embed the MaxMind database file at compile time
 const embedded = @embedFile("GeoLite2-City.mmdb");
 const enable_assertions = @import("builtin").mode == .debug;
 
 /// Main entry point for the GeoIP2 server.
-/// Initializes the async I/O subsystem, loads the MMDB database,
+/// Initializes the zio event-driven runtime, loads the MMDB database,
 /// binds to the HTTP port, and starts accepting connections.
-pub fn main(init: std.process.Init.Minimal) !void {
-    const io = Io.Threaded.global_single_threaded.io();
+pub fn main(init: std.process.Init) !void {
+    var rt = try zio.Runtime.init(init.gpa, .{ .executors = .auto });
+    defer rt.deinit();
+    const io = rt.io();
 
-    signals.initSignals();
-
-    const config = parseArgs(init.args);
+    const config = parseArgs(init.minimal.args);
 
     // Print help and exit if requested
     if (config.help) {
@@ -59,6 +64,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var server = try address.listen(io, .{
         .reuse_address = true,
     });
+    defer server.deinit(io);
     const server_usecs = getTimeMicros() - start_server;
     const total_usecs = mmdb_usecs + server_usecs;
 
@@ -72,17 +78,29 @@ pub fn main(init: std.process.Init.Minimal) !void {
     try stdout.flush();
 
     // Create an async group for handling multiple concurrent connections
-    var group: Io.Group = .init;
+    var conns: Io.Group = .init;
 
-    // Main event loop: accept and handle connections
-    while (!signals.isShutdownRequested()) {
-        const stream = server.accept(io) catch continue;
+    // Accept connections in a dedicated fiber so a shutdown signal can cancel
+    // it while it blocks in accept
+    var acceptor: Io.Group = .init;
+    acceptor.async(io, acceptLoop, .{ io, &server, &mmdb_file, &conns });
+
+    // Wait for SIGINT or SIGTERM, then stop accepting and drain connections
+    signals.waitForSignal();
+    acceptor.cancel(io);
+    conns.await(io) catch {};
+}
+
+/// Accept loop: spawn a connection handler per accepted stream until canceled.
+fn acceptLoop(io: Io, server: *Io.net.Server, mmdb_file: *MMDBFile, conns: *Io.Group) Io.Cancelable!void {
+    while (true) {
+        const stream = server.accept(io) catch |err| switch (err) {
+            error.Canceled => return error.Canceled,
+            else => continue,
+        };
         // Spawn async handler for each connection
-        group.async(io, handleConnection, .{ io, stream, &mmdb_file });
+        conns.async(io, handleConnection, .{ io, stream, mmdb_file });
     }
-
-    // Wait for all pending connections to complete
-    group.await(io) catch {};
 }
 
 /// Handle a single HTTP connection.
