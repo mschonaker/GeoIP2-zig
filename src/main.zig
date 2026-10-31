@@ -16,15 +16,56 @@ pub const std_options_debug_io = zio.debug_io;
 const embedded = @embedFile("GeoLite2-City.mmdb");
 const enable_assertions = @import("builtin").mode == .debug;
 
+// All runtime memory is fixed-size. The zio runtime heap holds executor lists,
+// task-pool slabs, and thread-pool state; it is sized for the worst case of
+// max_concurrent_connections live fibers. The connection slots below are the
+// only per-request buffers.
+const runtime_heap_bytes = 1 << 20; // 1 MiB
+const max_concurrent_connections = 64;
+const max_request_bytes = 1024; // also caps the HTTP request head size
+const max_response_bytes = 1024;
+const max_body_bytes = 1024;
+
+/// Fixed pool of per-connection buffers. Claiming a slot bounds the number of
+/// concurrent connections, their fibers, and their memory. A slot is claimed by
+/// the accept fiber and released by the connection fiber when it exits.
+const Connections = struct {
+    const Slot = struct {
+        request_buffer: [max_request_bytes]u8 = undefined,
+        response_buffer: [max_response_bytes]u8 = undefined,
+        body_buffer: [max_body_bytes]u8 = undefined,
+    };
+
+    used_bits: std.atomic.Value(u64) = .init(0),
+    slots: [max_concurrent_connections]Slot = @splat(.{}),
+
+    fn claim(self: *Connections) ?usize {
+        var used = self.used_bits.load(.acquire);
+        while (used != ~@as(u64, 0)) {
+            const index = @ctz(~used);
+            const desired = used | (@as(u64, 1) << @intCast(index));
+            used = self.used_bits.cmpxchgWeak(used, desired, .acq_rel, .acquire) orelse return index;
+        }
+        return null;
+    }
+
+    fn release(self: *Connections, index: usize) void {
+        _ = self.used_bits.fetchAnd(~(@as(u64, 1) << @intCast(index)), .release);
+    }
+};
+
 /// Main entry point for the GeoIP2 server.
-/// Initializes the zio event-driven runtime, loads the MMDB database,
-/// binds to the HTTP port, and starts accepting connections.
-pub fn main(init: std.process.Init) !void {
-    var rt = try zio.Runtime.init(init.gpa, .{ .executors = .auto });
+/// Initializes the zio event-driven runtime on a fixed heap, loads the MMDB
+/// database, binds to the HTTP port, and starts accepting connections.
+pub fn main(init: std.process.Init.Minimal) !void {
+    var runtime_heap: [runtime_heap_bytes]u8 = undefined;
+    var runtime_fba = std.heap.FixedBufferAllocator.init(&runtime_heap);
+    var rt: zio.Runtime = undefined;
+    try rt.initStatic(runtime_fba.threadSafeAllocator(), .{ .executors = .auto });
     defer rt.deinit();
     const io = rt.io();
 
-    const config = parseArgs(init.minimal.args);
+    const config = parseArgs(init.args);
 
     // Print help and exit if requested
     if (config.help) {
@@ -39,7 +80,7 @@ pub fn main(init: std.process.Init) !void {
         return error.Success;
     }
 
-    // Fixed buffer allocator for parsing - 32KB should be enough
+    // Fixed allocator sized for parsing the MMDB header metadata
     var buffer: [1024]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&buffer);
 
@@ -78,17 +119,25 @@ pub fn main(init: std.process.Init) !void {
 
     // Create an async group for handling multiple concurrent connections
     var conns: Io.Group = .init;
+    var connections: Connections = .{};
 
     // Accept connections in a dedicated fiber so a shutdown signal can cancel
     // it while it blocks in accept
     var acceptor: Io.Group = .init;
-    acceptor.async(io, acceptLoop, .{ io, &server, &mmdb_file, &conns });
+    acceptor.async(io, acceptLoop, .{ io, &server, &mmdb_file, &conns, &connections });
 
     // Wait for SIGINT or SIGTERM, then stop accepting and cancel connection
     // handlers: idle keep-alive connections would wait forever
     waitForSignal();
     acceptor.cancel(io);
     conns.cancel(io);
+
+    // Report how much of the fixed runtime heap is in use at shutdown
+    try stdout.print("Runtime heap in use: {d} of {d} bytes\n", .{
+        runtime_fba.end_index,
+        runtime_heap.len,
+    });
+    try stdout.flush();
 }
 
 /// Suspend the calling fiber until SIGINT or SIGTERM arrives.
@@ -103,44 +152,92 @@ fn waitForSignal() void {
 }
 
 /// Accept loop: spawn a connection handler per accepted stream until canceled.
-fn acceptLoop(io: Io, server: *Io.net.Server, mmdb_file: *MMDBFile, conns: *Io.Group) Io.Cancelable!void {
+/// Connections beyond the slot pool are rejected with 503 without allocating a
+/// fiber, so a connection flood cannot grow memory.
+fn acceptLoop(
+    io: Io,
+    server: *Io.net.Server,
+    mmdb_file: *MMDBFile,
+    conns: *Io.Group,
+    connections: *Connections,
+) Io.Cancelable!void {
     while (true) {
         const stream = server.accept(io) catch |err| switch (err) {
             error.Canceled => return error.Canceled,
             else => continue,
         };
-        // Spawn async handler for each connection
-        conns.async(io, handleConnection, .{ io, stream, mmdb_file });
+        if (connections.claim()) |index| {
+            conns.async(io, handleConnection, .{ io, stream, mmdb_file, connections, index });
+        } else {
+            rejectBusy(io, stream);
+        }
     }
+}
+
+const response_503_body = "no capacity";
+const response_503 =
+    "HTTP/1.1 503 Service Unavailable\r\n" ++
+    "connection: close\r\n" ++
+    "content-length: 11\r\n\r\n" ++
+    response_503_body;
+
+const response_431_body = "too large\n";
+const response_431 =
+    "HTTP/1.1 431 Request Header Fields Too Large\r\n" ++
+    "connection: close\r\n" ++
+    "content-length: 10\r\n\r\n" ++
+    response_431_body;
+
+comptime {
+    std.debug.assert(response_503_body.len == 11);
+    std.debug.assert(response_431_body.len == 10);
+}
+
+/// Respond 503 on the accept fiber itself: no slot or fiber is available.
+fn rejectBusy(io: Io, stream: Io.net.Stream) void {
+    defer stream.close(io);
+    var buffer: [256]u8 = undefined;
+    var writer = stream.writer(io, &buffer);
+    writer.interface.writeAll(response_503) catch return;
+    writer.interface.flush() catch {};
 }
 
 /// Handle a single HTTP connection.
 /// Serves requests until the client closes the connection or asks to close.
-fn handleConnection(io: Io, stream: Io.net.Stream, mmdb_file: *MMDBFile) void {
-    // Ensure stream is closed when handler exits
+fn handleConnection(
+    io: Io,
+    stream: Io.net.Stream,
+    mmdb_file: *MMDBFile,
+    connections: *Connections,
+    index: usize,
+) void {
     defer stream.close(io);
+    defer connections.release(index);
 
-    // Single buffer for everything: read request, then write response
-    var request_buffer: [1024]u8 = undefined;
-    var response_buffer: [1024]u8 = undefined;
+    const slot = &connections.slots[index];
 
     // Create reader/writer interfaces for the stream
-    var reader = stream.reader(io, &request_buffer);
-    var writer = stream.writer(io, &response_buffer);
+    var reader = stream.reader(io, &slot.request_buffer);
+    var writer = stream.writer(io, &slot.response_buffer);
 
     // Initialize HTTP server with our reader/writer
     var http_server = std.http.Server.init(&reader.interface, &writer.interface);
 
     while (true) {
-        // Receive and parse HTTP request
-        var request = http_server.receiveHead() catch {
+        // Receive and parse HTTP request. The request buffer size caps the
+        // head; an oversize head ends the connection with 431 (RFC 6585).
+        var request = http_server.receiveHead() catch |err| {
+            if (err == error.HttpHeadersOversize) {
+                writer.interface.writeAll(response_431) catch {};
+                writer.interface.flush() catch {};
+            }
             return;
         };
 
         // Log the request to stderr
         std.debug.print("{} {s} {}\n", .{ request.head.method, request.head.target, request.head.version });
 
-        serveRequest(&request, mmdb_file) catch return;
+        serveRequest(&request, mmdb_file, slot) catch return;
 
         if (!request.head.keep_alive) return;
     }
@@ -148,7 +245,18 @@ fn handleConnection(io: Io, stream: Io.net.Stream, mmdb_file: *MMDBFile) void {
 
 /// Serve a single request: performs IP lookup and returns JSON response.
 /// Any failure ends the connection.
-fn serveRequest(request: *std.http.Server.Request, mmdb_file: *MMDBFile) !void {
+fn serveRequest(
+    request: *std.http.Server.Request,
+    mmdb_file: *MMDBFile,
+    slot: *Connections.Slot,
+) !void {
+    // All endpoints are GET-only. An unread body would desync the next
+    // request on a keep-alive connection, so reject requests that carry one.
+    if (request.head.content_length != null or request.head.transfer_encoding == .chunked) {
+        request.respond("Request body not allowed", .{ .status = .bad_request }) catch {};
+        return error.BodyRejected;
+    }
+
     // Fast path for favicon.ico requests - return empty response
     if (std.mem.eql(u8, request.head.target, "/favicon.ico")) {
         return request.respond("", .{ .status = .no_content });
@@ -176,8 +284,7 @@ fn serveRequest(request: *std.http.Server.Request, mmdb_file: *MMDBFile) !void {
     }
 
     // Use streaming response - writes headers first, then body
-    var body_buf: [1024]u8 = undefined;
-    var body_writer = request.respondStreaming(&body_buf, .{
+    var body_writer = request.respondStreaming(&slot.body_buffer, .{
         .respond_options = .{
             .extra_headers = &[_]std.http.Header{.{
                 .name = "Content-Type",
@@ -274,6 +381,17 @@ fn parseArgs(args: std.process.Args) struct { host: []const u8, port: u16, help:
         }
     }
     return .{ .host = host, .port = port, .help = help };
+}
+
+test "Connections claim exhausts pool then release reclaims" {
+    var connections: Connections = .{};
+    var claimed: [max_concurrent_connections]usize = undefined;
+    for (0..claimed.len) |i| {
+        claimed[i] = connections.claim() orelse return error.TestUnexpectedResult;
+    }
+    try std.testing.expectEqual(null, connections.claim());
+    connections.release(claimed[7]);
+    try std.testing.expectEqual(claimed[7], connections.claim());
 }
 
 test "IpVersion.detect ipv4" {
