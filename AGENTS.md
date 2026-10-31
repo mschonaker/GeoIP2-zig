@@ -68,6 +68,42 @@ zig build
 - `zig build run` - Build and run
 - `zig build test` - Run tests
 
+## Fuzzing the MMDB Parser
+
+The parser has a fuzz target in `src/mmdb/fuzz.zig`. It starts from the valid
+seeds in `src/mmdb/corpus/` and mutates them.
+
+```bash
+zig build fuzz                # Run the corpus once (smoke test)
+zig build fuzz --fuzz=100000  # Run 100,000 fuzz iterations
+zig build fuzz --fuzz         # Run forever and open the web UI
+```
+
+- The corpus has a real GeoLite2 data window and synthetic seeds. The synthetic
+  seeds cover record sizes 24, 28, and 32, every data type, nested maps, deep
+  nesting, all string length encodings, and three metadata shapes.
+- `MMDBFile.init` rejects databases smaller than 128 KiB. Keep every corpus
+  seed at or above 128 KiB.
+- `src/mmdb/corpus_test.zig` checks the corpus with `zig build test`. It
+  resolves all 16 trie leaves for each record size and checks the type,
+  nesting, string, and metadata seeds.
+- `--fuzz` without a limit implies `--webui`. Do not combine `--webui` with
+  `--fuzz=limit`; the build fails with `limited fuzzing is not implemented yet
+  for --webui`.
+- A crash is saved to `.zig-cache/f/crash`. This Zig version does not replay it
+  automatically, and the file is the raw fuzzer input, not an MMDB file. Add a
+  unit test that reproduces the crash, then delete the file and run again.
+- The fuzz target sets `enable_assertions = true`, so malformed input can print
+  `Unexpected type` lines. These are expected errors, not crashes.
+- Do not set `.fuzz` on the fuzz module in `build.zig`. The build runner
+  rebuilds the test binary with `-ffuzz` when `--fuzz` is passed. Setting
+  `.fuzz = true` makes the fuzzer segfault at startup.
+- Regenerate the corpus after updating `src/GeoLite2-City.mmdb`:
+
+```bash
+uv run scripts/gen_fuzz_corpus.py
+```
+
 ## Push Rule
 
 **Always run tests before pushing**: Before running `git push`, always run `./run_tests.sh` first. Only push if all tests pass.

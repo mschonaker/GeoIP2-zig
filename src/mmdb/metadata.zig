@@ -96,7 +96,7 @@ pub const MetadataReader = struct {
                 metadata.node_count = try self.reader.readUint32();
             } else if (std.mem.eql(u8, key, "record_size")) {
                 metadata.record_size = try self.reader.readUint16();
-            } else unreachable;
+            } else return error.InvalidFormat;
         }
     }
 

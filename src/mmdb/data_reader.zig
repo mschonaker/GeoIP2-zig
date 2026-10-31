@@ -38,16 +38,24 @@ pub const DataReader = struct {
     /// Enable runtime type assertions (useful for debugging)
     enable_assertions: bool = false,
 
+    /// Return `error.InvalidFormat` unless `len` more bytes are available.
+    fn require(self: *DataReader, len: usize) Error!void {
+        if (self.offset > self.data.len) return error.InvalidFormat;
+        if (len > self.data.len - self.offset) return error.InvalidFormat;
+    }
+
     /// Decode the next data type from the stream.
     /// The type is encoded in the first 3 bits of the leading byte.
     /// See: https://maxmind.github.io/MaxMind-DB/
-    pub fn decodeNextType(self: *DataReader) DataType {
+    pub fn decodeNextType(self: *DataReader) Error!DataType {
+        try self.require(1);
         const x = self.data[self.offset] >> 5;
         return switch (x) {
             // Extended types (first 3 bits are 000)
             0 => {
                 // Extended types use a second byte to determine the actual type
-                const y = self.data[self.offset + 1] + 7;
+                try self.require(2);
+                const y: u16 = @as(u16, self.data[self.offset + 1]) + 7;
                 return switch (y) {
                     8 => .int32,
                     9 => .uint64,
@@ -57,7 +65,7 @@ pub const DataReader = struct {
                     13 => .end,
                     14 => .boolean,
                     15 => .float,
-                    else => @panic("Invalid type"),
+                    else => error.InvalidFormat,
                 };
             },
             // Pointer (used for string deduplication)
@@ -74,7 +82,7 @@ pub const DataReader = struct {
             6 => .uint32,
             // Map (key-value pairs)
             7 => .map,
-            else => @panic("Invalid type"),
+            else => error.InvalidFormat,
         };
     }
 
@@ -83,7 +91,7 @@ pub const DataReader = struct {
     /// This is useful for debugging but adds overhead in production.
     pub inline fn assertNextType(self: *DataReader, comptime expected: DataType) !void {
         if (!self.enable_assertions) return;
-        const decoded = self.decodeNextType();
+        const decoded = try self.decodeNextType();
         if (decoded == expected) return;
         std.debug.print("Unexpected type: {any}, expected: {any}\n", .{ decoded, expected });
         return error.UnexpectedType;
@@ -93,7 +101,7 @@ pub const DataReader = struct {
     /// Useful for union types like map keys (string or pointer).
     pub inline fn assertNextTypes(self: *DataReader, expecteds: []const DataType) !void {
         if (!self.enable_assertions) return;
-        const decoded = self.decodeNextType();
+        const decoded = try self.decodeNextType();
         inline for (expecteds) |expected|
             if (decoded == expected) return;
         std.debug.print("Unexpected type: {any}, expected: {any}\n", .{ decoded, expecteds });
@@ -116,6 +124,7 @@ pub const DataReader = struct {
     /// - 30: Add 2 bytes for actual size (range: 285-65820)
     /// - 31: Add 3 bytes for actual size (range: 65821+)
     pub fn readPayloadSize(self: *DataReader) !usize {
+        try self.require(1);
         var gap: usize = 0;
         // Extended types have a leading 0, requiring an extra byte
         if ((self.data[self.offset] & 0b11100000) == 0) gap = 1;
@@ -123,23 +132,27 @@ pub const DataReader = struct {
         switch (len) {
             // Small sizes (0-28 bytes) are stored directly
             0...28 => {
+                try self.require(gap + 1);
                 self.offset += gap + 1;
                 return len;
             },
             // Medium sizes: 1 additional byte extends the range
             29 => {
+                try self.require(gap + 2);
                 const r: usize = 29 + bytesToUsize(1, self.data[self.offset + gap + 1 ..]);
                 self.offset += gap + 2;
                 return r;
             },
             // Larger sizes: 2 additional bytes
             30 => {
+                try self.require(gap + 3);
                 const r: usize = 285 + bytesToUsize(2, self.data[self.offset + gap + 1 ..]);
                 self.offset += gap + 3;
                 return r;
             },
             // Largest sizes: 3 additional bytes
             31 => {
+                try self.require(gap + 4);
                 const r: usize = 65821 + bytesToUsize(3, self.data[self.offset + gap + 1 ..]);
                 self.offset += gap + 4;
                 return r;
@@ -154,12 +167,14 @@ pub const DataReader = struct {
     /// The pointer format uses bits 3-5 (SS) for size and bits 0-2 (VVV) for value.
     pub fn readPointer(self: *DataReader) !usize {
         try self.assertNextType(.pointer);
+        try self.require(1);
         const byte = self.data[self.offset];
         const size: u8 = (byte & 0b00011000) >> 3;
         const remainder: usize = byte & 0b00000111;
         switch (size) {
             // 1-byte pointer: 7-bit value
             0 => {
+                try self.require(2);
                 var accum: usize = remainder << 8;
                 accum |= bytesToUsize(1, self.data[self.offset + 1 ..]);
                 self.offset += 2;
@@ -167,6 +182,7 @@ pub const DataReader = struct {
             },
             // 2-byte pointer: adds 2048 offset, 14-bit value
             1 => {
+                try self.require(3);
                 var accum: usize = remainder << 16;
                 accum |= bytesToUsize(2, self.data[self.offset + 1 ..]);
                 accum += 2048;
@@ -175,6 +191,7 @@ pub const DataReader = struct {
             },
             // 3-byte pointer: adds 526336 offset, 21-bit value
             2 => {
+                try self.require(4);
                 var accum: usize = remainder << 24;
                 accum |= bytesToUsize(3, self.data[self.offset + 1 ..]);
                 accum += 526336;
@@ -183,6 +200,7 @@ pub const DataReader = struct {
             },
             // 4-byte pointer: full 32-bit value
             3 => {
+                try self.require(5);
                 const accum: usize = bytesToUsize(4, self.data[self.offset + 1 ..]);
                 self.offset += 5;
                 return accum;
@@ -196,6 +214,7 @@ pub const DataReader = struct {
     pub fn readString(self: *DataReader) ![]const u8 {
         try self.assertNextType(.string);
         const len = try self.readPayloadSize();
+        try self.require(len);
         const s = self.data[self.offset .. self.offset + len];
         self.offset += len;
         return s;
@@ -205,18 +224,21 @@ pub const DataReader = struct {
     /// Pointers allow the MMDB format to deduplicate repeated keys.
     pub fn readMapKey(self: *DataReader) ![]const u8 {
         try self.assertNextTypes(&.{ .string, .pointer });
-        switch (self.decodeNextType()) {
+        switch (try self.decodeNextType()) {
             .string => return try self.readString(),
             .pointer => {
                 // Resolve pointer to actual string location
                 const p = try self.readPointer();
+                const target = std.math.add(usize, self.data_offset, p) catch
+                    return error.InvalidFormat;
+                if (target > self.data.len) return error.InvalidFormat;
                 const current_offset = self.offset;
-                self.offset = self.data_offset + p;
-                const s = self.readString();
+                self.offset = target;
+                const s = try self.readString();
                 self.offset = current_offset;
                 return s;
             },
-            else => unreachable,
+            else => return error.InvalidFormat,
         }
     }
 
@@ -224,7 +246,8 @@ pub const DataReader = struct {
     pub fn readUint16(self: *DataReader) !u16 {
         try self.assertNextType(.uint16);
         const len = try self.readPayloadSize();
-        if (len == 0) return 0;
+        if (len > @sizeOf(u16)) return error.InvalidFormat;
+        try self.require(len);
         var accum: u16 = 0;
         for (0..len) |_| {
             accum <<= 8;
@@ -238,7 +261,8 @@ pub const DataReader = struct {
     pub fn readUint32(self: *DataReader) !u32 {
         try self.assertNextType(.uint32);
         const len = try self.readPayloadSize();
-        if (len == 0) return 0;
+        if (len > @sizeOf(u32)) return error.InvalidFormat;
+        try self.require(len);
         var accum: u32 = 0;
         for (0..len) |_| {
             accum <<= 8;
@@ -252,7 +276,8 @@ pub const DataReader = struct {
     pub fn readUint64(self: *DataReader) !u64 {
         try self.assertNextType(.uint64);
         const len = try self.readPayloadSize();
-        if (len == 0) return 0;
+        if (len > @sizeOf(u64)) return error.InvalidFormat;
+        try self.require(len);
         var accum: u64 = 0;
         for (0..len) |_| {
             accum <<= 8;
@@ -266,7 +291,8 @@ pub const DataReader = struct {
     pub fn readUint128(self: *DataReader) !u128 {
         try self.assertNextType(.uint128);
         const len = try self.readPayloadSize();
-        if (len == 0) return 0;
+        if (len > @sizeOf(u128)) return error.InvalidFormat;
+        try self.require(len);
         var accum: u128 = 0;
         for (0..len) |_| {
             accum <<= 8;
@@ -279,6 +305,7 @@ pub const DataReader = struct {
     /// Read a 64-bit IEEE 754 double-precision float from the stream.
     pub fn readDouble(self: *DataReader) !f64 {
         try self.assertNextType(.double);
+        try self.require(1 + @sizeOf(f64));
         self.offset += 1;
         var accum: u64 = 0;
         for (0..8) |_| {
@@ -454,5 +481,56 @@ test "readDouble" {
         var reader = DataReader{ .data = &arr };
         try expectEqual(-1.0, reader.readDouble());
         try expectEqual(arr.len, reader.offset);
+    }
+}
+
+// Test: Truncated or malformed input must return an error, not panic
+test "rejects truncated input" {
+    {
+        var arr = [_]u8{};
+        var reader = DataReader{ .data = &arr };
+        try std.testing.expectError(error.InvalidFormat, reader.decodeNextType());
+    }
+    {
+        // Extended type with no second byte
+        var arr = [_]u8{0};
+        var reader = DataReader{ .data = &arr };
+        try std.testing.expectError(error.InvalidFormat, reader.decodeNextType());
+    }
+    {
+        // Extended type byte that overflows when 7 is added
+        var arr = [_]u8{ 0x00, 0xf9 };
+        var reader = DataReader{ .data = &arr };
+        try std.testing.expectError(error.InvalidFormat, reader.decodeNextType());
+    }
+    {
+        // uint16 with a size of 3 exceeds the type width
+        var arr = [_]u8{ 0b10100011, 0, 0, 0 };
+        var reader = DataReader{ .data = &arr };
+        try std.testing.expectError(error.InvalidFormat, reader.readUint16());
+    }
+    {
+        // String length 5 with only 1 payload byte
+        var arr = [_]u8{ 0b01000101, 'a' };
+        var reader = DataReader{ .data = &arr };
+        try std.testing.expectError(error.InvalidFormat, reader.readString());
+    }
+    {
+        // Pointer size 0 with no payload byte
+        var arr = [_]u8{0x20};
+        var reader = DataReader{ .data = &arr };
+        try std.testing.expectError(error.InvalidFormat, reader.readPointer());
+    }
+    {
+        // Pointer target past the end of the data
+        var arr = [_]u8{ 0x20, 0x7f };
+        var reader = DataReader{ .data = &arr, .data_offset = 0 };
+        try std.testing.expectError(error.InvalidFormat, reader.readMapKey());
+    }
+    {
+        // Double with a missing payload byte
+        var arr = [_]u8{ 0x68, 0x3f, 0xf0 };
+        var reader = DataReader{ .data = &arr };
+        try std.testing.expectError(error.InvalidFormat, reader.readDouble());
     }
 }

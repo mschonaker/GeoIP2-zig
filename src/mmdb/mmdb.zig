@@ -46,25 +46,31 @@ pub const MMDBFile = struct {
         try metadata_reader.read(&metadata);
 
         // Validate required fields
-        if (metadata.record_size == null or metadata.node_count == null) {
+        const record_size = metadata.record_size orelse return error.InvalidFormat;
+        const node_count = metadata.node_count orelse return error.InvalidFormat;
+        if (record_size != 24 and record_size != 28 and record_size != 32) {
             return error.InvalidFormat;
         }
 
         // Calculate where the data section starts
         // Each node has 2 records, each record is record_size/8 bytes
-        const nodes_offset = (((metadata.record_size orelse 0) * 2) / 8) * (metadata.node_count orelse 0);
+        const node_bytes = std.math.mul(usize, (record_size * 2) / 8, node_count) catch
+            return error.InvalidFormat;
+        const trie_end = std.math.add(usize, node_bytes, 16) catch return error.InvalidFormat;
+        if (trie_end > metadata_offset) return error.InvalidFormat;
+        if (trie_end > data.len) return error.InvalidFormat;
 
         // Verify the database format (last 16 bytes of trie should be zeros)
         if (enable_assertions) {
             for (0..16) |i| {
-                if (data[nodes_offset + i] != 0) return error.InvalidFormat;
+                if (data[node_bytes + i] != 0) return error.InvalidFormat;
             }
         }
 
         return .{
             .data = data,
             .metadata_offset = metadata_offset,
-            .nodes_offset = nodes_offset + 16,
+            .nodes_offset = trie_end,
             .metadata = metadata,
             .enable_assertions = enable_assertions,
             .allocator = alloc,
@@ -156,16 +162,22 @@ pub const MMDBFile = struct {
     /// Traverses the Patricia trie bit by bit, following left/right
     /// records based on each bit of the address.
     pub fn locateDataNode(self: MMDBFile, address: [16]u8) ?usize {
+        const record_size = self.metadata.record_size orelse return null;
+        const node_count = self.metadata.node_count orelse return null;
         // Calculate how many bytes each record takes
-        const record_size_in_bytes = (((self.metadata.record_size orelse 0) * 2) / 8);
+        const record_size_in_bytes = (record_size * 2) / 8;
         var node_offset: usize = 0;
 
         // For 28-bit records, we use the "search tree" approach
-        const bytes_per_offset: usize = self.metadata.record_size.? / 8;
-        const use_nibble = self.metadata.record_size.? % 8 == 4;
+        const bytes_per_offset: usize = record_size / 8;
+        const use_nibble = record_size % 8 == 4;
 
         // Traverse the trie, one bit at a time (max 128 bits for IPv6)
         for (0..128) |bit_idx| {
+            // The node must fit inside the data
+            if (node_offset > self.data.len) return null;
+            if (record_size_in_bytes > self.data.len - node_offset) return null;
+
             const byte_idx: usize = bit_idx / 8;
             const bit_in_byte: u3 = @truncate(7 - (bit_idx % 8));
             const bit = (address[byte_idx] >> bit_in_byte) & 1;
@@ -177,16 +189,16 @@ pub const MMDBFile = struct {
                 right_record(self.data, node_offset, bytes_per_offset, use_nibble);
 
             // Check what this record points to
-            if (record == self.metadata.node_count.?) {
+            if (record == node_count) {
                 // No data at this prefix
                 return null;
-            } else if (record > self.metadata.node_count.?) {
+            } else if (record > node_count) {
                 // This is a data pointer - calculate actual data offset
-                return self.nodes_offset - 16 + (record - self.metadata.node_count.?);
+                return self.nodes_offset - 16 + (record - node_count);
             }
 
             // Move to the next node
-            node_offset = record * record_size_in_bytes;
+            node_offset = std.math.mul(usize, record, record_size_in_bytes) catch return null;
         }
 
         return null;
@@ -257,4 +269,15 @@ test {
     _ = mmdb_metadata;
     _ = mmdb_data_reader;
     _ = mmdb_data_writer;
+}
+
+test "init rejects a truncated database" {
+    const seed = @embedFile("corpus/real.mmdb");
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+
+    try std.testing.expectError(
+        error.InvalidFormat,
+        MMDBFile.init(seed[0 .. seed.len - 1], arena_state.allocator(), true),
+    );
 }

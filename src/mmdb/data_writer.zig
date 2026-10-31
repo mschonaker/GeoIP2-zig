@@ -1,6 +1,7 @@
 // GeoIP2-zig
 // MMDB data writer - serializes binary data to JSON
 
+const std = @import("std");
 const DataReader = @import("data_reader.zig").DataReader;
 
 /// Error type for data writer operations
@@ -14,6 +15,11 @@ pub fn dataWriter(data_offset: usize) DataWriter {
     return .{ .data_offset = data_offset };
 }
 
+/// Maximum nesting depth. Real MMDB records nest only a few levels, and the
+/// limit stops a self-referential pointer from recursing until the stack
+/// overflows.
+const max_depth = 256;
+
 /// DataWriter converts binary MMDB data to JSON.
 /// It reads data types from a DataReader and writes them
 /// to a JSON writer (e.g., std.json.Stringify).
@@ -23,35 +29,43 @@ pub const DataWriter = struct {
 
     /// Main entry point: write any data type to the writer
     pub fn writeObject(self: DataWriter, reader: *DataReader, writer: anytype) Error!void {
-        const dt = reader.decodeNextType();
+        return self.writeValue(reader, writer, 0);
+    }
+
+    fn writeValue(self: DataWriter, reader: *DataReader, writer: anytype, depth: usize) Error!void {
+        if (depth >= max_depth) return error.InvalidFormat;
+        const dt = try reader.decodeNextType();
         switch (dt) {
-            .pointer => try self.writePointer(reader, writer),
+            .pointer => try self.writePointer(reader, writer, depth),
             .string => try self.writeString(reader, writer),
-            .map => try self.writeMap(reader, writer),
-            .array => try self.writeArray(reader, writer),
+            .map => try self.writeMap(reader, writer, depth),
+            .array => try self.writeArray(reader, writer, depth),
             .boolean => try self.writeBoolean(reader, writer),
             .uint16 => try self.writeUint16(reader, writer),
             .uint32 => try self.writeUint32(reader, writer),
             .uint64 => try self.writeUint64(reader, writer),
             .uint128 => try self.writeUint128(reader, writer),
             .double => try self.writeDouble(reader, writer),
-            else => @panic("Unimplemented"),
+            else => return error.InvalidFormat,
         }
     }
 
     /// Write a pointer by resolving it to the actual data.
     /// Pointers contain an offset from the data section start.
-    pub fn writePointer(self: DataWriter, reader: *DataReader, writer: anytype) Error!void {
+    pub fn writePointer(self: DataWriter, reader: *DataReader, writer: anytype, depth: usize) Error!void {
         const pointer: usize = try reader.readPointer();
+        const target = std.math.add(usize, self.data_offset, pointer) catch
+            return error.InvalidFormat;
+        if (target >= reader.data.len) return error.InvalidFormat;
         // Save current position, jump to pointer location, read data, restore position
         const current_offset = reader.offset;
-        reader.offset = self.data_offset + pointer;
-        try self.writeObject(reader, writer);
+        reader.offset = target;
+        try self.writeValue(reader, writer, depth + 1);
         reader.offset = current_offset;
     }
 
     /// Write a map (key-value pairs) as JSON object
-    pub fn writeMap(self: DataWriter, reader: *DataReader, writer: anytype) Error!void {
+    pub fn writeMap(self: DataWriter, reader: *DataReader, writer: anytype, depth: usize) Error!void {
         try reader.assertNextType(.map);
         const l = try reader.readPayloadSize();
         try writer.beginObject();
@@ -59,18 +73,18 @@ pub const DataWriter = struct {
             // Map keys can be strings or pointers to strings
             const key: []const u8 = try reader.readMapKey();
             try writer.objectField(key);
-            try self.writeObject(reader, writer);
+            try self.writeValue(reader, writer, depth + 1);
         }
         try writer.endObject();
     }
 
     /// Write an array as JSON array
-    pub fn writeArray(self: DataWriter, reader: *DataReader, writer: anytype) Error!void {
+    pub fn writeArray(self: DataWriter, reader: *DataReader, writer: anytype, depth: usize) Error!void {
         try reader.assertNextType(.array);
         const l = try reader.readPayloadSize();
         try writer.beginArray();
         for (0..l) |_| {
-            try self.writeObject(reader, writer);
+            try self.writeValue(reader, writer, depth + 1);
         }
         try writer.endArray();
     }
@@ -119,3 +133,16 @@ pub const DataWriter = struct {
         try writer.write(u);
     }
 };
+
+test "rejects a self-referential pointer" {
+    // Pointer size 0, value 0: points back at itself.
+    var arr = [_]u8{ 0x20, 0x00 };
+    var reader = DataReader{ .data = &arr, .data_offset = 0 };
+    var out: [64]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&out);
+    var json_stringify: std.json.Stringify = .{ .writer = &writer };
+    try std.testing.expectError(
+        error.InvalidFormat,
+        dataWriter(0).writeObject(&reader, &json_stringify),
+    );
+}
