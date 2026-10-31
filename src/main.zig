@@ -6,7 +6,6 @@ const std = @import("std");
 const Io = std.Io;
 const zio = @import("zio");
 const mmdb = @import("mmdb/mmdb.zig");
-const signals = @import("signals.zig");
 const MMDBFile = mmdb.MMDBFile;
 
 // Route std.log and std.debug.print through the zio runtime so logging
@@ -85,10 +84,22 @@ pub fn main(init: std.process.Init) !void {
     var acceptor: Io.Group = .init;
     acceptor.async(io, acceptLoop, .{ io, &server, &mmdb_file, &conns });
 
-    // Wait for SIGINT or SIGTERM, then stop accepting and drain connections
-    signals.waitForSignal();
+    // Wait for SIGINT or SIGTERM, then stop accepting and cancel connection
+    // handlers: idle keep-alive connections would wait forever
+    waitForSignal();
     acceptor.cancel(io);
-    conns.await(io) catch {};
+    conns.cancel(io);
+}
+
+/// Suspend the calling fiber until SIGINT or SIGTERM arrives.
+fn waitForSignal() void {
+    var sigint = zio.Signal.init(.interrupt) catch return;
+    defer sigint.deinit();
+
+    var sigterm = zio.Signal.init(.terminate) catch return;
+    defer sigterm.deinit();
+
+    _ = zio.select(.{ .sigint = &sigint, .sigterm = &sigterm }) catch {};
 }
 
 /// Accept loop: spawn a connection handler per accepted stream until canceled.
@@ -104,7 +115,7 @@ fn acceptLoop(io: Io, server: *Io.net.Server, mmdb_file: *MMDBFile, conns: *Io.G
 }
 
 /// Handle a single HTTP connection.
-/// Parses the request, performs IP lookup, and returns JSON response.
+/// Serves requests until the client closes the connection or asks to close.
 fn handleConnection(io: Io, stream: Io.net.Stream, mmdb_file: *MMDBFile) void {
     // Ensure stream is closed when handler exits
     defer stream.close(io);
@@ -120,43 +131,48 @@ fn handleConnection(io: Io, stream: Io.net.Stream, mmdb_file: *MMDBFile) void {
     // Initialize HTTP server with our reader/writer
     var http_server = std.http.Server.init(&reader.interface, &writer.interface);
 
-    // Receive and parse HTTP request
-    var request = http_server.receiveHead() catch {
-        return;
-    };
+    while (true) {
+        // Receive and parse HTTP request
+        var request = http_server.receiveHead() catch {
+            return;
+        };
 
-    // Log the request to stderr
-    std.debug.print("{} {s} {}\n", .{ request.head.method, request.head.target, request.head.version });
+        // Log the request to stderr
+        std.debug.print("{} {s} {}\n", .{ request.head.method, request.head.target, request.head.version });
 
+        serveRequest(&request, mmdb_file) catch return;
+
+        if (!request.head.keep_alive) return;
+    }
+}
+
+/// Serve a single request: performs IP lookup and returns JSON response.
+/// Any failure ends the connection.
+fn serveRequest(request: *std.http.Server.Request, mmdb_file: *MMDBFile) !void {
     // Fast path for favicon.ico requests - return empty response
     if (std.mem.eql(u8, request.head.target, "/favicon.ico")) {
-        request.respond("", .{ .status = .no_content }) catch {};
-        return;
+        return request.respond("", .{ .status = .no_content });
     }
 
     // Health check endpoint
     if (std.mem.eql(u8, request.head.target, "/health")) {
-        request.respond("OK", .{ .status = .ok }) catch {};
-        return;
+        return request.respond("OK", .{ .status = .ok });
     }
 
     // Detect IP version from URL path, return 400 if unknown
     const ip_prefix = IpVersion.detect(request.head.target) catch {
-        request.respond("Unknown target", .{ .status = .bad_request }) catch {};
-        return;
+        return request.respond("Unknown target", .{ .status = .bad_request });
     };
 
     // Parse the IP address string into 16-byte array
     // IPv4 addresses are converted to IPv6-mapped format (::ffff:a.b.c.d)
     const address: [16]u8 = ip_prefix.parse(request.head.target) catch {
-        request.respond("Invalid format", .{ .status = .bad_request }) catch {};
-        return;
+        return request.respond("Invalid format", .{ .status = .bad_request });
     };
 
     // Fast probe: check if IP exists in database before streaming response
     if (!mmdb_file.lookupIpV6Probe(address)) {
-        request.respond("IP not found in database", .{ .status = .not_found }) catch {};
-        return;
+        return request.respond("IP not found in database", .{ .status = .not_found });
     }
 
     // Use streaming response - writes headers first, then body
@@ -169,16 +185,16 @@ fn handleConnection(io: Io, stream: Io.net.Stream, mmdb_file: *MMDBFile) void {
             }},
         },
     }) catch {
-        return;
+        return error.ResponseFailed;
     };
 
     // Write JSON directly to streaming body (single underlying stream)
     mmdb_file.lookupIpV6(address, &body_writer.writer) catch |e| {
         std.debug.print("lookupIpV6 error: {}\n", .{e});
-        return;
+        return e;
     };
 
-    body_writer.end() catch {};
+    try body_writer.end();
 }
 
 /// IP version union type for handling both IPv4 and IPv6.
