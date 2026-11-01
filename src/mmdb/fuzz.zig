@@ -53,11 +53,59 @@ fn fuzzMmdb(_: void, smith: *Smith) !void {
 
     var out: [max_output_bytes]u8 = undefined;
     var w: std.Io.Writer = .fixed(&out);
-    file.lookupIpV6(address, &w) catch {};
+    file.lookupIpV6(address, &w, null) catch {};
     w.end = 0;
 
     const offset = smith.index(data.len);
-    file.writeData(offset, &w) catch {};
+    file.writeData(offset, &w, null) catch {};
+    w.end = 0;
+
+    fuzzProjection(&file, smith, address, &w);
+}
+
+/// Fuzz the projection parser and the filtered serialization with random
+/// specs. The spec reuses corpus key names and grammar characters so the
+/// serializer reaches the emit, descend, and skip decisions against real
+/// data. Parse rejections end the iteration, which also covers the parser's
+/// reject path.
+fn fuzzProjection(file: *const mmdb.MMDBFile, smith: *Smith, address: [16]u8, writer: *std.Io.Writer) void {
+    const words = [_][]const u8{
+        "a",        "b",         "c",     "x",     "zz",      "*",     "0",        "1",
+        "country",  "continent", "names", "en",    "de",      "city",  "location", "iso_code",
+        "latitude", "time_zone", "pt-BR", "leaf0", "(en,de)", "(0,1)",
+    };
+
+    var spec: [256]u8 = undefined;
+    var n: usize = 0;
+    spec[0] = 'f';
+    spec[1] = '=';
+    n = 2;
+
+    for (0..1 + smith.index(3)) |path_i| {
+        if (n + 16 > spec.len) break;
+        if (path_i > 0) {
+            spec[n] = ',';
+            n += 1;
+        }
+        if (smith.boolWeighted(1, 1)) {
+            spec[n] = '!';
+            n += 1;
+        }
+        for (0..1 + smith.index(4)) |seg_i| {
+            if (n + 16 > spec.len) break;
+            if (seg_i > 0) {
+                spec[n] = '.';
+                n += 1;
+            }
+            const word = words[smith.index(words.len)];
+            @memcpy(spec[n .. n + word.len], word);
+            n += word.len;
+        }
+    }
+
+    const proj = mmdb.Projection.parseQuery(spec[0..n]) catch return;
+    const projection = proj orelse return;
+    file.lookupIpV6(address, writer, &projection) catch {};
 }
 
 ////////////////////////////////////////////////////////////////////////////////

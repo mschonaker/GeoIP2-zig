@@ -65,6 +65,23 @@ Unit tests only:
 zig build test
 ```
 
+Projection property test. It starts its own server on `127.0.0.1:8080`, sends
+hundreds of random and edge-case `?f=` specs, and compares every response
+against a Python reference implementation of the projection semantics:
+
+```shell
+uv run scripts/test_projection.py        # fixed seed, 300 random specs
+uv run scripts/test_projection.py 12345  # different random seed
+```
+
+Fuzzing covers the binary parser, the writers, and the projection path with
+random `?f=` specs against the corpus seeds:
+
+```shell
+zig build fuzz                 # run the corpus once
+zig build fuzz --fuzz=100000   # 100000 iterations
+```
+
 ## API
 
 ```
@@ -82,7 +99,28 @@ Response:
 }
 ```
 
-Status codes: `200` lookup result, `204` favicon, `400` bad target, IP format, or request body (all endpoints are GET-only), `404` IP not in database, `431` request head over the 8 KiB cap, `503` connection pool full.
+## Field projection
+
+`?f=` restricts the response to the requested paths. Nesting is preserved and
+unknown fields are omitted.
+
+```
+GET /ipv4/8.8.8.8?f=country.names.en,location.(latitude,longitude)
+```
+
+```json
+{ "country": { "names": { "en": "United States" } }, "location": { "latitude": 37.4223, "longitude": -122.0848 } }
+```
+
+- Comma-separated dot paths. `(a,b)` groups siblings: `location.(latitude,longitude)`.
+- `*` matches any key or array element: `*.iso_code`, `names.(de,en)`, `columns.0`.
+- `!` excludes: `f=!registered_country` returns everything else. Exclusions win
+  over inclusions: `f=country,!country.names`.
+- Paths are matched structurally, so any database field works without schema
+  knowledge. Malformed syntax gives `400`.
+- Limits: 32 paths, 8 segments per path, 64-byte segments.
+
+Status codes: `200` lookup result, `204` favicon, `400` bad target, IP format, projection syntax, or request body (all endpoints are GET-only), `404` IP not in database, `431` request head over the 8 KiB cap, `503` connection pool full.
 
 ## Benchmarks
 

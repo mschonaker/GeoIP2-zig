@@ -10,6 +10,8 @@ const DataReader = @import("data_reader.zig").DataReader;
 const data_writer = @import("data_writer.zig");
 const Metadata = @import("metadata.zig").Metadata;
 
+pub const Projection = @import("projection.zig").Projection;
+
 /// Magic string that marks the end of the data section
 /// This is used to locate the metadata section in the MMDB file.
 const separator = "\xab\xcd\xefMaxMind.com";
@@ -117,9 +119,15 @@ pub const MMDBFile = struct {
 
     /// Look up an IPv6 address and write JSON to the provided writer.
     /// Uses a binary trie (Patricia trie) search algorithm.
-    pub fn lookupIpV6(self: *const MMDBFile, address: [16]u8, writer: anytype) !void {
+    /// A non-null `projection` serializes only the requested fields.
+    pub fn lookupIpV6(
+        self: *const MMDBFile,
+        address: [16]u8,
+        writer: anytype,
+        projection: ?*const Projection,
+    ) !void {
         const offset = self.locateDataNode(address) orelse return error.NoData;
-        try self.writeData(offset, writer);
+        try self.writeData(offset, writer, projection);
     }
 
     /// Locate the data node for a given IP address.
@@ -199,7 +207,12 @@ pub const MMDBFile = struct {
 
     /// Write data at a given offset to the JSON writer.
     /// This is called when we've found the data node for an IP.
-    pub fn writeData(self: *const MMDBFile, offset: usize, writer: anytype) !void {
+    pub fn writeData(
+        self: *const MMDBFile,
+        offset: usize,
+        writer: anytype,
+        projection: ?*const Projection,
+    ) !void {
         // Validate offset is within the data section.
         if (offset < self.nodes_offset or offset >= (self.metadata_offset - separator.len))
             return error.InvalidArgument;
@@ -214,6 +227,7 @@ pub const MMDBFile = struct {
         };
 
         // Write the data to JSON.
+        if (projection) |proj| return data_writer.writeProjection(&data_reader, &json_stringify, proj);
         try data_writer.writeObject(&data_reader, &json_stringify);
     }
 };

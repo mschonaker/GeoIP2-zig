@@ -1,12 +1,14 @@
 // GeoIP2-zig
 // HTTP server with MaxMind MMDB geolocation lookup
-// Endpoints: /ipv4/<ip> and /ipv6/<ip>.
+// Endpoints: /ipv4/<ip> and /ipv6/<ip>, with optional field
+// projection through the "?f=" query parameter.
 
 const std = @import("std");
 const Io = std.Io;
 const zio = @import("zio");
 const mmdb = @import("mmdb/mmdb.zig");
 const MMDBFile = mmdb.MMDBFile;
+const Projection = mmdb.Projection;
 
 // Embed the MaxMind database file at compile time.
 const embedded = @embedFile("GeoLite2-City.mmdb");
@@ -427,18 +429,28 @@ fn serveRequest(
         return error.BodyRejected;
     }
 
+    // Split the request target into the path and the query string.
+    const target = request.head.target;
+    const query_at = std.mem.indexOfScalar(u8, target, '?');
+    const path = if (query_at) |q| target[0..q] else target;
+
     // Fast path for favicon.ico requests - return empty response.
-    if (std.mem.eql(u8, request.head.target, "/favicon.ico"))
+    if (std.mem.eql(u8, path, "/favicon.ico"))
         return respond(request, "", .no_content);
 
     // Health check endpoint.
-    if (std.mem.eql(u8, request.head.target, "/health"))
+    if (std.mem.eql(u8, path, "/health"))
         return respond(request, "OK", .ok);
 
     // Detect IP version from URL path, return 400 if unknown.
-    const ip = IpVersion.detect(request.head.target) catch {
+    const ip = IpVersion.detect(path) catch {
         return respond(request, "Unknown target", .bad_request);
     };
+
+    // Parse the optional field projection, e.g. ?f=country.names.en.
+    var projection: ?Projection = null;
+    if (query_at) |q| projection = Projection.parseQuery(target[q + 1 ..]) catch
+        return respond(request, "Invalid projection", .bad_request);
 
     // Parse the IP address string into 16-byte array
     // IPv4 addresses are converted to IPv6-mapped format (::ffff:a.b.c.d).
@@ -463,7 +475,8 @@ fn serveRequest(
     };
 
     // Write JSON directly to streaming body (single underlying stream).
-    mmdb_file.lookupIpV6(address, &body_writer.writer) catch |e| {
+    const proj_ptr: ?*const Projection = if (projection) |*p| p else null;
+    mmdb_file.lookupIpV6(address, &body_writer.writer, proj_ptr) catch |e| {
         std.debug.print("lookupIpV6 error: {}\n", .{e});
         return e;
     };
@@ -584,4 +597,38 @@ test "IpVersion.parse IPv6" {
     try std.testing.expectEqual(@as(u8, 1), result[15]);
     try std.testing.expectEqual(@as(u8, 0), result[0]);
     try std.testing.expectEqual(@as(u8, 0), result[14]);
+}
+
+test "projection limits the response of the embedded database" {
+    var buffer: [1024]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buffer);
+    var file = try MMDBFile.init(embedded, fba.allocator());
+    defer file.deinit();
+
+    const ip = try IpVersion.detect("/ipv4/8.8.8.8");
+    const address = try ip.parse();
+    const projection = try Projection.parse("country.iso_code,location.(latitude,longitude)");
+
+    var out: [1024]u8 = undefined;
+    var w: Io.Writer = .fixed(&out);
+    try file.lookupIpV6(address, &w, &projection);
+    const body = out[0..w.end];
+
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"iso_code\": \"US\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"latitude\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"longitude\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "continent") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "time_zone") == null);
+
+    const excluded = try Projection.parse("!registered_country,!continent.names");
+    var out2: [4096]u8 = undefined;
+    var w2: Io.Writer = .fixed(&out2);
+    try file.lookupIpV6(address, &w2, &excluded);
+    const body2 = out2[0..w2.end];
+
+    try std.testing.expect(std.mem.indexOf(u8, body2, "registered_country") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body2, "\"code\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body2, "North America") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body2, "United States") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body2, "time_zone") != null);
 }

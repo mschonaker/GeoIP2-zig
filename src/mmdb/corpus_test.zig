@@ -42,19 +42,19 @@ test "multi-node tries resolve every leaf" {
 
                 var out: [4096]u8 = undefined;
                 var w: std.Io.Writer = .fixed(&out);
-                try file.lookupIpV6(address, &w);
+                try file.lookupIpV6(address, &w, null);
             } else {
                 try std.testing.expect(found == null);
 
                 var out: [4096]u8 = undefined;
                 var w: std.Io.Writer = .fixed(&out);
-                try std.testing.expectError(error.NoData, file.lookupIpV6(address, &w));
+                try std.testing.expectError(error.NoData, file.lookupIpV6(address, &w, null));
             }
         }
 
         var out: [4096]u8 = undefined;
         var w: std.Io.Writer = .fixed(&out);
-        try file.lookupIpV6(addressForLeaf(0), &w);
+        try file.lookupIpV6(addressForLeaf(0), &w, null);
         try std.testing.expectEqualStrings("\"leaf0\"", out[0..w.end]);
     }
 }
@@ -81,9 +81,9 @@ test "type coverage seed reaches every decoder branch" {
         var w: std.Io.Writer = .fixed(&out);
 
         switch (outcome) {
-            .ok => try file.lookupIpV6(address, &w),
-            .invalid => try std.testing.expectError(error.InvalidFormat, file.lookupIpV6(address, &w)),
-            .no_data => try std.testing.expectError(error.NoData, file.lookupIpV6(address, &w)),
+            .ok => try file.lookupIpV6(address, &w, null),
+            .invalid => try std.testing.expectError(error.InvalidFormat, file.lookupIpV6(address, &w, null)),
+            .no_data => try std.testing.expectError(error.NoData, file.lookupIpV6(address, &w, null)),
         }
     }
 }
@@ -103,7 +103,7 @@ test "deep nesting and long strings serialize" {
 
         var out: [1 << 17]u8 = undefined;
         var w: std.Io.Writer = .fixed(&out);
-        try file.lookupIpV6(addressForLeaf(0), &w);
+        try file.lookupIpV6(addressForLeaf(0), &w, null);
     }
 }
 
