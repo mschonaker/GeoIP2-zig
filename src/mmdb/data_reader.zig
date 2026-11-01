@@ -1,42 +1,37 @@
 // GeoIP2-zig
-// MMDB binary data reader - parses the MaxMind database binary format
+// MMDB binary data reader - parses the MaxMind database binary format.
 
 const std = @import("std");
 
-/// Error types for data reader operations
+/// Type assertions are debug checks. They compile out in release builds.
+const enable_assertions = @import("builtin").mode == .debug;
+
+/// Error types for data reader operations.
 pub const Error = error{
     UnexpectedType,
     InvalidFormat,
 };
 
-/// Create a new DataReader for reading MMDB data at a given offset.
-///
-/// Parameters:
-/// - data: The raw MMDB binary data
-/// - offset: Starting position to read from
-/// - enable_assertions: Enable runtime type checking (expensive)
-/// - data_offset: Base offset for resolving pointers
-pub fn dataReader(data: []const u8, offset: usize, enable_assertions: bool, data_offset: usize) DataReader {
-    return .{
-        .data = data,
-        .offset = offset,
-        .data_offset = data_offset,
-        .enable_assertions = enable_assertions,
-    };
-}
-
 /// DataReader reads and decodes the binary MMDB data format.
 /// It provides methods for reading various data types like strings,
 /// integers, pointers, maps, and arrays from the binary stream.
 pub const DataReader = struct {
-    /// The raw binary MMDB data
+    /// The raw binary MMDB data.
     data: []const u8,
-    /// Current position in the data stream
+    /// Current position in the data stream.
     offset: usize = 0,
-    /// Base offset used for resolving pointer values
+    /// Base offset used for resolving pointer values.
     data_offset: usize = undefined,
-    /// Enable runtime type assertions (useful for debugging)
-    enable_assertions: bool = false,
+
+    /// Create a reader for MMDB data at a given offset.
+    /// `data_offset` is the base offset used to resolve pointers.
+    pub fn init(data: []const u8, offset: usize, data_offset: usize) DataReader {
+        return .{
+            .data = data,
+            .offset = offset,
+            .data_offset = data_offset,
+        };
+    }
 
     /// Return `error.InvalidFormat` unless `len` more bytes are available.
     fn require(self: *DataReader, len: usize) Error!void {
@@ -51,9 +46,9 @@ pub const DataReader = struct {
         try self.require(1);
         const x = self.data[self.offset] >> 5;
         return switch (x) {
-            // Extended types (first 3 bits are 000)
+            // Extended types (first 3 bits are 000).
             0 => {
-                // Extended types use a second byte to determine the actual type
+                // Extended types use a second byte to determine the actual type.
                 try self.require(2);
                 const y: u16 = @as(u16, self.data[self.offset + 1]) + 7;
                 return switch (y) {
@@ -68,29 +63,28 @@ pub const DataReader = struct {
                     else => error.InvalidFormat,
                 };
             },
-            // Pointer (used for string deduplication)
+            // Pointer (used for string deduplication).
             1 => .pointer,
-            // UTF-8 string
+            // UTF-8 string.
             2 => .string,
-            // Double (64-bit float)
+            // Double (64-bit float).
             3 => .double,
-            // Byte sequence
+            // Byte sequence.
             4 => .bytes,
-            // Unsigned 16-bit integer
+            // Unsigned 16-bit integer.
             5 => .uint16,
-            // Unsigned 32-bit integer
+            // Unsigned 32-bit integer.
             6 => .uint32,
-            // Map (key-value pairs)
+            // Map (key-value pairs).
             7 => .map,
             else => error.InvalidFormat,
         };
     }
 
     /// Assert that the next type matches the expected type.
-    /// Only performs check if enable_assertions is true (compile-time constant).
-    /// This is useful for debugging but adds overhead in production.
+    /// The check compiles out in release builds.
     pub inline fn assertNextType(self: *DataReader, comptime expected: DataType) !void {
-        if (!self.enable_assertions) return;
+        if (!enable_assertions) return;
         const decoded = try self.decodeNextType();
         if (decoded == expected) return;
         std.debug.print("Unexpected type: {any}, expected: {any}\n", .{ decoded, expected });
@@ -99,8 +93,8 @@ pub const DataReader = struct {
 
     /// Assert that the next type matches one of the expected types.
     /// Useful for union types like map keys (string or pointer).
-    pub inline fn assertNextTypes(self: *DataReader, expecteds: []const DataType) !void {
-        if (!self.enable_assertions) return;
+    pub inline fn assertNextTypes(self: *DataReader, comptime expecteds: []const DataType) !void {
+        if (!enable_assertions) return;
         const decoded = try self.decodeNextType();
         inline for (expecteds) |expected|
             if (decoded == expected) return;
@@ -119,38 +113,38 @@ pub const DataReader = struct {
 
     /// Read a size/value from the stream.
     /// The MMDB format encodes sizes in the lower 5 bits of the first byte:
-    /// - 0-28: Direct value (no additional bytes needed)
-    /// - 29: Add 1 byte for actual size (range: 29-284)
-    /// - 30: Add 2 bytes for actual size (range: 285-65820)
-    /// - 31: Add 3 bytes for actual size (range: 65821+)
+    /// - 0-28: Direct value (no additional bytes needed).
+    /// - 29: Add 1 byte for actual size (range: 29-284).
+    /// - 30: Add 2 bytes for actual size (range: 285-65820).
+    /// - 31: Add 3 bytes for actual size (range: 65821+).
     pub fn readPayloadSize(self: *DataReader) !usize {
         try self.require(1);
         var gap: usize = 0;
-        // Extended types have a leading 0, requiring an extra byte
+        // Extended types have a leading 0, requiring an extra byte.
         if ((self.data[self.offset] & 0b11100000) == 0) gap = 1;
         const len = self.data[self.offset] & 0b00011111;
         switch (len) {
-            // Small sizes (0-28 bytes) are stored directly
+            // Small sizes (0-28 bytes) are stored directly.
             0...28 => {
                 try self.require(gap + 1);
                 self.offset += gap + 1;
                 return len;
             },
-            // Medium sizes: 1 additional byte extends the range
+            // Medium sizes: 1 additional byte extends the range.
             29 => {
                 try self.require(gap + 2);
                 const r: usize = 29 + bytesToUsize(1, self.data[self.offset + gap + 1 ..]);
                 self.offset += gap + 2;
                 return r;
             },
-            // Larger sizes: 2 additional bytes
+            // Larger sizes: 2 additional bytes.
             30 => {
                 try self.require(gap + 3);
                 const r: usize = 285 + bytesToUsize(2, self.data[self.offset + gap + 1 ..]);
                 self.offset += gap + 3;
                 return r;
             },
-            // Largest sizes: 3 additional bytes
+            // Largest sizes: 3 additional bytes.
             31 => {
                 try self.require(gap + 4);
                 const r: usize = 65821 + bytesToUsize(3, self.data[self.offset + gap + 1 ..]);
@@ -172,7 +166,7 @@ pub const DataReader = struct {
         const size: u8 = (byte & 0b00011000) >> 3;
         const remainder: usize = byte & 0b00000111;
         switch (size) {
-            // 1-byte pointer: 7-bit value
+            // 1-byte pointer: 7-bit value.
             0 => {
                 try self.require(2);
                 var accum: usize = remainder << 8;
@@ -180,7 +174,7 @@ pub const DataReader = struct {
                 self.offset += 2;
                 return accum;
             },
-            // 2-byte pointer: adds 2048 offset, 14-bit value
+            // 2-byte pointer: adds 2048 offset, 14-bit value.
             1 => {
                 try self.require(3);
                 var accum: usize = remainder << 16;
@@ -189,7 +183,7 @@ pub const DataReader = struct {
                 self.offset += 3;
                 return accum;
             },
-            // 3-byte pointer: adds 526336 offset, 21-bit value
+            // 3-byte pointer: adds 526336 offset, 21-bit value.
             2 => {
                 try self.require(4);
                 var accum: usize = remainder << 24;
@@ -198,7 +192,7 @@ pub const DataReader = struct {
                 self.offset += 4;
                 return accum;
             },
-            // 4-byte pointer: full 32-bit value
+            // 4-byte pointer: full 32-bit value.
             3 => {
                 try self.require(5);
                 const accum: usize = bytesToUsize(4, self.data[self.offset + 1 ..]);
@@ -220,6 +214,15 @@ pub const DataReader = struct {
         return s;
     }
 
+    /// Read a pointer and resolve it to an absolute offset in `data`.
+    pub fn readPointerTarget(self: *DataReader) !usize {
+        const pointer = try self.readPointer();
+        const target = std.math.add(usize, self.data_offset, pointer) catch
+            return error.InvalidFormat;
+        if (target > self.data.len) return error.InvalidFormat;
+        return target;
+    }
+
     /// Read a map key, which can be either a string or a pointer to a string.
     /// Pointers allow the MMDB format to deduplicate repeated keys.
     pub fn readMapKey(self: *DataReader) ![]const u8 {
@@ -227,11 +230,8 @@ pub const DataReader = struct {
         switch (try self.decodeNextType()) {
             .string => return try self.readString(),
             .pointer => {
-                // Resolve pointer to actual string location
-                const p = try self.readPointer();
-                const target = std.math.add(usize, self.data_offset, p) catch
-                    return error.InvalidFormat;
-                if (target > self.data.len) return error.InvalidFormat;
+                // Resolve pointer to actual string location.
+                const target = try self.readPointerTarget();
                 const current_offset = self.offset;
                 self.offset = target;
                 const s = try self.readString();
@@ -339,24 +339,26 @@ const DataType = enum {
 
 const expectEqual = std.testing.expectEqual;
 
-// Test: Verify payload size decoding for various lengths
+////////////////////////////////////////////////////////////////////////////////
+
+// Test: Verify payload size decoding for various lengths.
 test "string lengths" {
     {
-        // 80-byte string (len = 80, fits in 5 bits)
+        // 80-byte string (len = 80, fits in 5 bits).
         var arr = [_]u8{ 0b01011101, 0b00110011 };
         var reader = DataReader{ .data = &arr };
         try expectEqual(80, reader.readPayloadSize());
         try expectEqual(2, reader.offset);
     }
     {
-        // 13,392-byte string (len = 29 + 1 byte extension)
+        // 13,392-byte string (len = 29 + 1 byte extension).
         var arr = [_]u8{ 0b01011110, 0b00110011, 0b00110011 };
         var reader = DataReader{ .data = &arr };
         try expectEqual(13392, reader.readPayloadSize());
         try expectEqual(3, reader.offset);
     }
     {
-        // 3,421,264-byte string (len = 31 + 3 byte extension)
+        // 3,421,264-byte string (len = 31 + 3 byte extension).
         var arr = [_]u8{ 0b01011111, 0b00110011, 0b00110011, 0b00110011 };
         var reader = DataReader{ .data = &arr };
         try expectEqual(3421264, reader.readPayloadSize());
@@ -364,17 +366,17 @@ test "string lengths" {
     }
 }
 
-// Test: Verify unsigned integer reading
+// Test: Verify unsigned integer reading.
 test "readUint tests" {
     {
-        // 1-byte u16 with value 2
+        // 1-byte u16 with value 2.
         var arr = [_]u8{ 0b10100001, 0b00000010, 0b01011011 };
         var reader = DataReader{ .data = &arr };
         try expectEqual(2, reader.readUint16());
         try expectEqual(2, reader.offset);
     }
     {
-        // 0-byte u16 (empty)
+        // 0-byte u16 (empty).
         var arr = [_]u8{ 0b10100000, 0b00000010, 0b01011011 };
         var reader = DataReader{ .data = &arr };
         try expectEqual(0, reader.readUint16());
@@ -382,7 +384,7 @@ test "readUint tests" {
     }
 }
 
-// Test: Verify 64-bit unsigned integer reading
+// Test: Verify 64-bit unsigned integer reading.
 test "readUint u64" {
     {
         var arr = [_]u8{ 0b00000100, 0b00000010, 0b01100110, 0b11010110, 0b11110111, 0b00001000, 0b01001101 };
@@ -392,73 +394,73 @@ test "readUint u64" {
     }
 }
 
-// Test: Verify pointer decoding for various pointer sizes
+// Test: Verify pointer decoding for various pointer sizes.
 test "read pointers" {
     {
-        // Pointer size 0, value 0
+        // Pointer size 0, value 0.
         var arr = [_]u8{ 0x20, 0x0 };
         var reader = DataReader{ .data = &arr };
         try expectEqual(0, reader.readPointer());
         try expectEqual(arr.len, reader.offset);
     }
     {
-        // Pointer size 0, value 5
+        // Pointer size 0, value 5.
         var arr = [_]u8{ 0x20, 0x5 };
         var reader = DataReader{ .data = &arr };
         try expectEqual(5, reader.readPointer());
         try expectEqual(arr.len, reader.offset);
     }
     {
-        // Pointer size 0, value 10
+        // Pointer size 0, value 10.
         var arr = [_]u8{ 0x20, 0xa };
         var reader = DataReader{ .data = &arr };
         try expectEqual(10, reader.readPointer());
         try expectEqual(arr.len, reader.offset);
     }
     {
-        // Pointer size 1, value 1023
+        // Pointer size 1, value 1023.
         var arr = [_]u8{ 0x23, 0xff };
         var reader = DataReader{ .data = &arr };
         try expectEqual(1023, reader.readPointer());
         try expectEqual(arr.len, reader.offset);
     }
     {
-        // Pointer size 2, value 3017
+        // Pointer size 2, value 3017.
         var arr = [_]u8{ 0x28, 0x3, 0xc9 };
         var reader = DataReader{ .data = &arr };
         try expectEqual(3017, reader.readPointer());
         try expectEqual(arr.len, reader.offset);
     }
     {
-        // Pointer size 3, max value
+        // Pointer size 3, max value.
         var arr = [_]u8{ 0x2f, 0xf7, 0xfb };
         var reader = DataReader{ .data = &arr };
         try expectEqual(524283, reader.readPointer());
         try expectEqual(arr.len, reader.offset);
     }
     {
-        // Pointer size 3, boundary
+        // Pointer size 3, boundary.
         var arr = [_]u8{ 0x2f, 0xff, 0xff };
         var reader = DataReader{ .data = &arr };
         try expectEqual(526_335, reader.readPointer());
         try expectEqual(arr.len, reader.offset);
     }
     {
-        // Pointer size 4, near max
+        // Pointer size 4, near max.
         var arr = [_]u8{ 0x37, 0xf7, 0xf7, 0xfe };
         var reader = DataReader{ .data = &arr };
         try expectEqual(134_217_726, reader.readPointer());
         try expectEqual(arr.len, reader.offset);
     }
     {
-        // Pointer size 4, max value
+        // Pointer size 4, max value.
         var arr = [_]u8{ 0x37, 0xff, 0xff, 0xff };
         var reader = DataReader{ .data = &arr };
         try expectEqual(134_744_063, reader.readPointer());
         try expectEqual(arr.len, reader.offset);
     }
     {
-        // Pointer size 5, max signed 32-bit
+        // Pointer size 5, max signed 32-bit.
         var arr = [_]u8{ 0x38, 0x7f, 0xff, 0xff, 0xff };
         var reader = DataReader{ .data = &arr };
         try expectEqual(2_147_483_647, reader.readPointer());
@@ -469,14 +471,14 @@ test "read pointers" {
 test "readDouble" {
     {
         // 1.0 encoded as IEEE 754 double (0x3FF0 0000 0000 0000)
-        // Type byte 0x68: top 3 bits = 011 (double), lower 5 = 01000 (size=8)
+        // Type byte 0x68: top 3 bits = 011 (double), lower 5 = 01000 (size=8).
         var arr = [_]u8{ 0x68, 0x3f, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
         var reader = DataReader{ .data = &arr };
         try expectEqual(1.0, reader.readDouble());
         try expectEqual(arr.len, reader.offset);
     }
     {
-        // -1.0 encoded as IEEE 754 double (0xBFF0 0000 0000 0000)
+        // -1.0 encoded as IEEE 754 double (0xBFF0 0000 0000 0000).
         var arr = [_]u8{ 0x68, 0xbf, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
         var reader = DataReader{ .data = &arr };
         try expectEqual(-1.0, reader.readDouble());
@@ -484,7 +486,7 @@ test "readDouble" {
     }
 }
 
-// Test: Truncated or malformed input must return an error, not panic
+// Test: Truncated or malformed input must return an error, not panic.
 test "rejects truncated input" {
     {
         var arr = [_]u8{};
@@ -492,43 +494,43 @@ test "rejects truncated input" {
         try std.testing.expectError(error.InvalidFormat, reader.decodeNextType());
     }
     {
-        // Extended type with no second byte
+        // Extended type with no second byte.
         var arr = [_]u8{0};
         var reader = DataReader{ .data = &arr };
         try std.testing.expectError(error.InvalidFormat, reader.decodeNextType());
     }
     {
-        // Extended type byte that overflows when 7 is added
+        // Extended type byte that overflows when 7 is added.
         var arr = [_]u8{ 0x00, 0xf9 };
         var reader = DataReader{ .data = &arr };
         try std.testing.expectError(error.InvalidFormat, reader.decodeNextType());
     }
     {
-        // uint16 with a size of 3 exceeds the type width
+        // uint16 with a size of 3 exceeds the type width.
         var arr = [_]u8{ 0b10100011, 0, 0, 0 };
         var reader = DataReader{ .data = &arr };
         try std.testing.expectError(error.InvalidFormat, reader.readUint16());
     }
     {
-        // String length 5 with only 1 payload byte
+        // String length 5 with only 1 payload byte.
         var arr = [_]u8{ 0b01000101, 'a' };
         var reader = DataReader{ .data = &arr };
         try std.testing.expectError(error.InvalidFormat, reader.readString());
     }
     {
-        // Pointer size 0 with no payload byte
+        // Pointer size 0 with no payload byte.
         var arr = [_]u8{0x20};
         var reader = DataReader{ .data = &arr };
         try std.testing.expectError(error.InvalidFormat, reader.readPointer());
     }
     {
-        // Pointer target past the end of the data
+        // Pointer target past the end of the data.
         var arr = [_]u8{ 0x20, 0x7f };
         var reader = DataReader{ .data = &arr, .data_offset = 0 };
         try std.testing.expectError(error.InvalidFormat, reader.readMapKey());
     }
     {
-        // Double with a missing payload byte
+        // Double with a missing payload byte.
         var arr = [_]u8{ 0x68, 0x3f, 0xf0 };
         var reader = DataReader{ .data = &arr };
         try std.testing.expectError(error.InvalidFormat, reader.readDouble());

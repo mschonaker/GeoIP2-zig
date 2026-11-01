@@ -3,7 +3,7 @@
 [![Zig](https://img.shields.io/badge/Zig-0.17+-yellow?logo=zig)](https://ziglang.org/)
 [![License](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
-A hand-rolled implementation of the MaxMind GeoIP2 binary format in Zig. No external dependencies for the core MMDB logic — just Zig's standard library and a 40MB embedded database. The HTTP server runs on [zio](https://github.com/lalinsky/zio), an evented I/O runtime implementing Zig 0.17's `std.Io` interface (kqueue/io_uring/epoll). The project explores low-level systems programming: binary protocol parsing, Patricia trie traversal, and evented I/O with fixed-size memory.
+An implementation of the MaxMind GeoIP2 binary format in Zig. No external dependencies for the core MMDB logic — just Zig's standard library and a 40MB embedded database. The HTTP server runs on [zio](https://github.com/lalinsky/zio), an evented I/O runtime implementing Zig 0.17's `std.Io` interface (kqueue/io_uring/epoll). The project explores low-level systems programming: binary protocol parsing, Patricia trie traversal, and evented I/O with fixed-size memory.
 
 **Performance: ~150K requests/second** with p99 latency under 4ms at 256 concurrent connections. Load test results are published in every CI run's job summary.
 

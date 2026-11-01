@@ -29,6 +29,39 @@ const corpus_total = blk: {
     break :blk total;
 };
 
+fn fuzzMmdb(_: void, smith: *Smith) !void {
+    var buf: [max_input_bytes]u8 = undefined;
+    const len = smith.sliceWeighted(
+        &buf,
+        &.{
+            .rangeAtMost(u32, min_mmdb_bytes, max_input_bytes, 3),
+            .rangeAtMost(u32, 0, min_mmdb_bytes, 1),
+        },
+        &.{.rangeAtMost(u8, 0, 255, 1)},
+    );
+    const data = buf[0..len];
+    if (smith.eos()) return;
+
+    var arena_state: std.heap.ArenaAllocator = .init(std.heap.smp_allocator);
+    defer arena_state.deinit();
+
+    var file = mmdb.MMDBFile.init(data, arena_state.allocator()) catch return;
+    defer file.deinit();
+
+    var address: [16]u8 = undefined;
+    smith.bytes(&address);
+
+    var out: [max_output_bytes]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&out);
+    file.lookupIpV6(address, &w) catch {};
+    w.end = 0;
+
+    const offset = smith.index(data.len);
+    file.writeData(offset, &w) catch {};
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
 test "fuzz mmdb parser" {
     const allocator = std.testing.allocator;
     const buf = try allocator.alloc(u8, corpus_total);
@@ -62,41 +95,10 @@ test "corpus seeds initialize" {
         var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
         defer arena_state.deinit();
 
-        var file = mmdb.MMDBFile.init(seed, arena_state.allocator(), true) catch |err| {
+        var file = mmdb.MMDBFile.init(seed, arena_state.allocator()) catch |err| {
             std.debug.print("corpus seed {d} failed: {}\n", .{ i, err });
             return err;
         };
         defer file.deinit();
     }
-}
-
-fn fuzzMmdb(_: void, smith: *Smith) !void {
-    var buf: [max_input_bytes]u8 = undefined;
-    const len = smith.sliceWeighted(
-        &buf,
-        &.{
-            .rangeAtMost(u32, min_mmdb_bytes, max_input_bytes, 3),
-            .rangeAtMost(u32, 0, min_mmdb_bytes, 1),
-        },
-        &.{.rangeAtMost(u8, 0, 255, 1)},
-    );
-    const data = buf[0..len];
-    if (smith.eos()) return;
-
-    var arena_state: std.heap.ArenaAllocator = .init(std.heap.smp_allocator);
-    defer arena_state.deinit();
-
-    var file = mmdb.MMDBFile.init(data, arena_state.allocator(), true) catch return;
-    defer file.deinit();
-
-    var address: [16]u8 = undefined;
-    smith.bytes(&address);
-
-    var out: [max_output_bytes]u8 = undefined;
-    var w: std.Io.Writer = .fixed(&out);
-    file.lookupIpV6(address, &w) catch {};
-    w.end = 0;
-
-    const offset = smith.index(data.len);
-    _ = file.writeData(offset, &w) catch 0;
 }

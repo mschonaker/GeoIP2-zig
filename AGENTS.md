@@ -93,8 +93,9 @@ zig build fuzz --fuzz         # Run forever and open the web UI
 - A crash is saved to `.zig-cache/f/crash`. This Zig version does not replay it
   automatically, and the file is the raw fuzzer input, not an MMDB file. Add a
   unit test that reproduces the crash, then delete the file and run again.
-- The fuzz target sets `enable_assertions = true`, so malformed input can print
-  `Unexpected type` lines. These are expected errors, not crashes.
+- Type assertions follow the build mode: Debug builds enable them and release
+  builds compile them out. In Debug, malformed input can print `Unexpected type`
+  lines. These are expected errors, not crashes.
 - Do not set `.fuzz` on the fuzz module in `build.zig`. The build runner
   rebuilds the test binary with `-ffuzz` when `--fuzz` is passed. Setting
   `.fuzz = true` makes the fuzzer segfault at startup.

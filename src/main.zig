@@ -1,6 +1,6 @@
 // GeoIP2-zig
 // HTTP server with MaxMind MMDB geolocation lookup
-// Endpoints: /ipv4/<ip> and /ipv6/<ip>
+// Endpoints: /ipv4/<ip> and /ipv6/<ip>.
 
 const std = @import("std");
 const Io = std.Io;
@@ -8,9 +8,8 @@ const zio = @import("zio");
 const mmdb = @import("mmdb/mmdb.zig");
 const MMDBFile = mmdb.MMDBFile;
 
-// Embed the MaxMind database file at compile time
+// Embed the MaxMind database file at compile time.
 const embedded = @embedFile("GeoLite2-City.mmdb");
-const enable_assertions = @import("builtin").mode == .debug;
 
 // All runtime memory is fixed-size. The zio runtime heap holds executor lists,
 // task-pool slabs, and thread-pool state; the connection slots below are the
@@ -46,9 +45,8 @@ const Connections = struct {
             while (used != ~@as(u64, 0)) {
                 const bit: u6 = @intCast(@ctz(~used));
                 const desired = used | (@as(u64, 1) << bit);
-                if (word.cmpxchgWeak(used, desired, .acq_rel, .acquire) == null) {
+                if (word.cmpxchgWeak(used, desired, .acq_rel, .acquire) == null)
                     return word_index * slots_per_word + bit;
-                }
                 used = word.load(.acquire);
             }
         }
@@ -75,7 +73,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     const config = parseArgs(init.args);
 
-    // Print help and exit if requested
+    // Print help and exit if requested.
     if (config.help) {
         var stderr_buf: [256]u8 = undefined;
         var stderr_writer = Io.File.stderr().writer(io, &stderr_buf);
@@ -88,17 +86,17 @@ pub fn main(init: std.process.Init.Minimal) !void {
         return error.Success;
     }
 
-    // Fixed allocator sized for parsing the MMDB header metadata
+    // Fixed allocator sized for parsing the MMDB header metadata.
     var buffer: [1024]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&buffer);
 
-    // Load and parse the embedded MMDB database
+    // Load and parse the embedded MMDB database.
     const start_mmdb = getTimeMicros();
-    var mmdb_file = try mmdb.MMDBFile.init(embedded, fba.allocator(), enable_assertions);
+    var mmdb_file = try mmdb.MMDBFile.init(embedded, fba.allocator());
     defer mmdb_file.deinit();
     const mmdb_usecs = getTimeMicros() - start_mmdb;
 
-    // Write database metadata to stdout
+    // Write database metadata to stdout.
     var stdout_buf: [1024]u8 = undefined;
     var stdout_writer = Io.File.stdout().writer(io, &stdout_buf);
     const stdout = &stdout_writer.interface;
@@ -106,7 +104,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     try stdout.print("\n\n--------------------------------------------------------------------------------\n", .{});
     try stdout.flush();
 
-    // Create TCP server socket and start listening
+    // Create TCP server socket and start listening.
     const address = try Io.net.IpAddress.parse(config.host, config.port);
     const start_server = getTimeMicros();
     var server = try address.listen(io, .{
@@ -117,7 +115,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const server_usecs = getTimeMicros() - start_server;
     const total_usecs = mmdb_usecs + server_usecs;
 
-    // Print initialization timing information
+    // Print initialization timing information.
     try stdout.print("Init: MMDB={d}μs Server={d}μs Total={d}μs\n", .{
         mmdb_usecs,
         server_usecs,
@@ -126,22 +124,22 @@ pub fn main(init: std.process.Init.Minimal) !void {
     try stdout.print("Started listening on {s}:{d}... (CTRL+C to stop)\n", .{ config.host, config.port });
     try stdout.flush();
 
-    // Create an async group for handling multiple concurrent connections
+    // Create an async group for handling multiple concurrent connections.
     var conns: Io.Group = .init;
     var connections: Connections = .{};
 
     // Accept connections in a dedicated fiber so a shutdown signal can cancel
-    // it while it blocks in accept
+    // it while it blocks in accept.
     var acceptor: Io.Group = .init;
     acceptor.async(io, acceptLoop, .{ io, &server, &mmdb_file, &conns, &connections });
 
     // Wait for SIGINT or SIGTERM, then stop accepting and cancel connection
-    // handlers: idle keep-alive connections would wait forever
+    // handlers: idle keep-alive connections would wait forever.
     waitForSignal();
     acceptor.cancel(io);
     conns.cancel(io);
 
-    // Report how much of the fixed runtime heap is in use at shutdown
+    // Report how much of the fixed runtime heap is in use at shutdown.
     try stdout.print("Runtime heap in use: {d} of {d} bytes\n", .{
         runtime_fba.end_index,
         runtime_heap.len,
@@ -175,11 +173,11 @@ fn acceptLoop(
             error.Canceled => return error.Canceled,
             else => continue,
         };
-        if (connections.claim()) |index| {
-            conns.async(io, handleConnection, .{ io, stream, mmdb_file, connections, index });
-        } else {
+        const index = connections.claim() orelse {
             rejectBusy(io, stream);
-        }
+            continue;
+        };
+        conns.async(io, handleConnection, .{ io, stream, mmdb_file, connections, index });
     }
 }
 
@@ -225,11 +223,11 @@ fn handleConnection(
 
     const slot = &connections.slots[index];
 
-    // Create reader/writer interfaces for the stream
+    // Create reader/writer interfaces for the stream.
     var reader = stream.reader(io, &slot.request_buffer);
     var writer = stream.writer(io, &slot.response_buffer);
 
-    // Initialize HTTP server with our reader/writer
+    // Initialize HTTP server with our reader/writer.
     var http_server = std.http.Server.init(&reader.interface, &writer.interface);
 
     while (true) {
@@ -243,7 +241,7 @@ fn handleConnection(
             return;
         };
 
-        // Log the request to stderr
+        // Log the request to stderr.
         std.debug.print("{} {s} {}\n", .{ request.head.method, request.head.target, request.head.version });
 
         serveRequest(&request, mmdb_file, slot) catch return;
@@ -266,33 +264,30 @@ fn serveRequest(
         return error.BodyRejected;
     }
 
-    // Fast path for favicon.ico requests - return empty response
-    if (std.mem.eql(u8, request.head.target, "/favicon.ico")) {
+    // Fast path for favicon.ico requests - return empty response.
+    if (std.mem.eql(u8, request.head.target, "/favicon.ico"))
         return request.respond("", .{ .status = .no_content });
-    }
 
-    // Health check endpoint
-    if (std.mem.eql(u8, request.head.target, "/health")) {
+    // Health check endpoint.
+    if (std.mem.eql(u8, request.head.target, "/health"))
         return request.respond("OK", .{ .status = .ok });
-    }
 
-    // Detect IP version from URL path, return 400 if unknown
-    const ip_prefix = IpVersion.detect(request.head.target) catch {
+    // Detect IP version from URL path, return 400 if unknown.
+    const ip = IpVersion.detect(request.head.target) catch {
         return request.respond("Unknown target", .{ .status = .bad_request });
     };
 
     // Parse the IP address string into 16-byte array
-    // IPv4 addresses are converted to IPv6-mapped format (::ffff:a.b.c.d)
-    const address: [16]u8 = ip_prefix.parse(request.head.target) catch {
+    // IPv4 addresses are converted to IPv6-mapped format (::ffff:a.b.c.d).
+    const address = ip.parse() catch {
         return request.respond("Invalid format", .{ .status = .bad_request });
     };
 
-    // Fast probe: check if IP exists in database before streaming response
-    if (!mmdb_file.lookupIpV6Probe(address)) {
+    // Fast probe: check if IP exists in database before streaming response.
+    if (!mmdb_file.lookupIpV6Probe(address))
         return request.respond("IP not found in database", .{ .status = .not_found });
-    }
 
-    // Use streaming response - writes headers first, then body
+    // Use streaming response - writes headers first, then body.
     var body_writer = request.respondStreaming(&slot.body_buffer, .{
         .respond_options = .{
             .extra_headers = &[_]std.http.Header{.{
@@ -304,7 +299,7 @@ fn serveRequest(
         return error.ResponseFailed;
     };
 
-    // Write JSON directly to streaming body (single underlying stream)
+    // Write JSON directly to streaming body (single underlying stream).
     mmdb_file.lookupIpV6(address, &body_writer.writer) catch |e| {
         std.debug.print("lookupIpV6 error: {}\n", .{e});
         return e;
@@ -314,46 +309,28 @@ fn serveRequest(
 }
 
 /// IP version union type for handling both IPv4 and IPv6.
-/// Encapsulates URL parsing and IP address conversion.
+/// Each variant carries the address string from the request target.
 const IpVersion = union(enum) {
-    ipv4,
-    ipv6,
+    ipv4: []const u8,
+    ipv6: []const u8,
 
-    /// Detect IP version from HTTP request target path.
+    /// Detect IP version from HTTP request target path and capture the address.
     /// Returns error.UnknownTarget if path doesn't match /ipv4/ or /ipv6/.
     fn detect(target: []const u8) !IpVersion {
-        if (std.mem.startsWith(u8, target, "/ipv4/")) return .ipv4;
-        if (std.mem.startsWith(u8, target, "/ipv6/")) return .ipv6;
+        if (std.mem.startsWith(u8, target, "/ipv4/")) return .{ .ipv4 = target["/ipv4/".len..] };
+        if (std.mem.startsWith(u8, target, "/ipv6/")) return .{ .ipv6 = target["/ipv6/".len..] };
         return error.UnknownTarget;
     }
 
-    /// Get the URL prefix for this IP version.
-    fn prefix(self: IpVersion) []const u8 {
-        return switch (self) {
-            .ipv4 => "/ipv4/",
-            .ipv6 => "/ipv6/",
-        };
-    }
-
-    /// Extract the IP address string from the URL target.
-    /// e.g., "/ipv4/8.8.8.8" -> "8.8.8.8"
-    fn path(self: IpVersion, target: []const u8) []const u8 {
-        return target[self.prefix().len..];
-    }
-
-    /// Parse the IP address string into a 16-byte array.
+    /// Parse the captured address string into a 16-byte array.
     /// IPv4 addresses are converted to IPv6-mapped format (::ffff:a.b.c.d).
-    /// Returns error.ParseFailed if the string is not a valid IP address.
-    fn parse(self: IpVersion, target: []const u8) ![16]u8 {
+    fn parse(self: IpVersion) ![16]u8 {
         return switch (self) {
-            .ipv4 => brk: {
-                const addr4 = try std.Io.net.IpAddress.parseIp4(self.path(target), 0);
+            .ipv4 => |str| brk: {
+                const addr4 = try std.Io.net.IpAddress.parseIp4(str, 0);
                 break :brk [16]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, addr4.ip4.bytes[0], addr4.ip4.bytes[1], addr4.ip4.bytes[2], addr4.ip4.bytes[3] };
             },
-            .ipv6 => brk: {
-                const addr6 = try std.Io.net.IpAddress.parseIp6(self.path(target), 0);
-                break :brk addr6.ip6.bytes;
-            },
+            .ipv6 => |str| (try std.Io.net.IpAddress.parseIp6(str, 0)).ip6.bytes,
         };
     }
 };
@@ -392,6 +369,8 @@ fn parseArgs(args: std.process.Args) struct { host: []const u8, port: u16, help:
     return .{ .host = host, .port = port, .help = help };
 }
 
+////////////////////////////////////////////////////////////////////////////////
+
 test "Connections claim exhausts pool then release reclaims" {
     var connections: Connections = .{};
     var claimed: [max_concurrent_connections]usize = undefined;
@@ -405,33 +384,25 @@ test "Connections claim exhausts pool then release reclaims" {
 
 test "IpVersion.detect ipv4" {
     const result = try IpVersion.detect("/ipv4/8.8.8.8");
-    try std.testing.expectEqual(IpVersion.ipv4, result);
+    try std.testing.expectEqualStrings("8.8.8.8", result.ipv4);
 }
 
 test "IpVersion.detect ipv6" {
     const result = try IpVersion.detect("/ipv6/2001:4860:4860::8888");
-    try std.testing.expectEqual(IpVersion.ipv6, result);
+    try std.testing.expectEqualStrings("2001:4860:4860::8888", result.ipv6);
 }
 
 test "IpVersion.detect unknown target" {
-    const result = IpVersion.detect("/health");
-    try std.testing.expectError(error.UnknownTarget, result);
+    try std.testing.expectError(error.UnknownTarget, IpVersion.detect("/health"));
 }
 
 test "IpVersion.detect root path" {
-    const result = IpVersion.detect("/");
-    try std.testing.expectError(error.UnknownTarget, result);
-}
-
-test "IpVersion.path extracts IP correctly" {
-    const ipv4: IpVersion = .ipv4;
-    const ipv6: IpVersion = .ipv6;
-    try std.testing.expectEqualStrings("8.8.8.8", ipv4.path("/ipv4/8.8.8.8"));
-    try std.testing.expectEqualStrings("2001:4860:4860::8888", ipv6.path("/ipv6/2001:4860:4860::8888"));
+    try std.testing.expectError(error.UnknownTarget, IpVersion.detect("/"));
 }
 
 test "IpVersion.parse IPv4 to IPv6-mapped" {
-    const result = try IpVersion.parse(IpVersion.ipv4, "/ipv4/8.8.8.8");
+    const ip = try IpVersion.detect("/ipv4/8.8.8.8");
+    const result = try ip.parse();
     try std.testing.expectEqual([16]u8{
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0xff, 0xff, 0x08, 0x08, 0x08, 0x08,
@@ -439,12 +410,13 @@ test "IpVersion.parse IPv4 to IPv6-mapped" {
 }
 
 test "IpVersion.parse IPv4 invalid" {
-    const result = IpVersion.parse(IpVersion.ipv4, "/ipv4/invalid");
-    try std.testing.expectError(error.InvalidCharacter, result);
+    const ip = try IpVersion.detect("/ipv4/invalid");
+    try std.testing.expectError(error.InvalidCharacter, ip.parse());
 }
 
 test "IpVersion.parse IPv6" {
-    const result = try IpVersion.parse(IpVersion.ipv6, "/ipv6/::1");
+    const ip = try IpVersion.detect("/ipv6/::1");
+    const result = try ip.parse();
     try std.testing.expectEqual(@as(u8, 1), result[15]);
     try std.testing.expectEqual(@as(u8, 0), result[0]);
     try std.testing.expectEqual(@as(u8, 0), result[14]);

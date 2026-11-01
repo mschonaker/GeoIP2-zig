@@ -20,12 +20,14 @@ fn addressForLeaf(leaf: usize) [16]u8 {
     return address;
 }
 
+////////////////////////////////////////////////////////////////////////////////
+
 test "multi-node tries resolve every leaf" {
     for (trie_seeds) |seed| {
         var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
         defer arena_state.deinit();
 
-        var file = try mmdb.MMDBFile.init(seed, arena_state.allocator(), true);
+        var file = try mmdb.MMDBFile.init(seed, arena_state.allocator());
         defer file.deinit();
 
         for (leaf_offsets, 0..) |expected, leaf| {
@@ -62,7 +64,7 @@ test "type coverage seed reaches every decoder branch" {
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
 
-    var file = try mmdb.MMDBFile.init(seed, arena_state.allocator(), true);
+    var file = try mmdb.MMDBFile.init(seed, arena_state.allocator());
     defer file.deinit();
 
     const Outcome = enum { ok, invalid, no_data };
@@ -96,7 +98,7 @@ test "deep nesting and long strings serialize" {
         var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
         defer arena_state.deinit();
 
-        var file = try mmdb.MMDBFile.init(seed, arena_state.allocator(), true);
+        var file = try mmdb.MMDBFile.init(seed, arena_state.allocator());
         defer file.deinit();
 
         var out: [1 << 17]u8 = undefined;
@@ -116,7 +118,7 @@ test "metadata seeds print" {
         var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
         defer arena_state.deinit();
 
-        var file = try mmdb.MMDBFile.init(seed, arena_state.allocator(), true);
+        var file = try mmdb.MMDBFile.init(seed, arena_state.allocator());
         defer file.deinit();
 
         var out: [1 << 16]u8 = undefined;
