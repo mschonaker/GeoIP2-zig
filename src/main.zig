@@ -73,7 +73,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
     defer rt.deinit();
     const io = rt.io();
 
-    const config = parseArgs(init.args);
+    // Storage for the parsed host string. Outlives the args iterator, whose
+    // internal buffer is freed on deinit under Windows.
+    var host_buf: [256]u8 = undefined;
+    const config = try parseArgs(init.args, &host_buf);
 
     // Print help and exit if requested.
     if (config.help) {
@@ -93,10 +96,10 @@ pub fn main(init: std.process.Init.Minimal) !void {
     var fba = std.heap.FixedBufferAllocator.init(&buffer);
 
     // Load and parse the embedded MMDB database.
-    const start_mmdb = getTimeMicros();
+    const start_mmdb = getTimeMicros(io);
     var mmdb_file = try mmdb.MMDBFile.init(embedded, fba.allocator());
     defer mmdb_file.deinit();
-    const mmdb_usecs = getTimeMicros() - start_mmdb;
+    const mmdb_usecs = getTimeMicros(io) - start_mmdb;
 
     // Write database metadata to stdout.
     var stdout_buf: [1024]u8 = undefined;
@@ -108,13 +111,13 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     // Create TCP server socket and start listening.
     const address = try Io.net.IpAddress.parse(config.host, config.port);
-    const start_server = getTimeMicros();
+    const start_server = getTimeMicros(io);
     var server = try address.listen(io, .{
         .reuse_address = true,
         .kernel_backlog = 512,
     });
     defer server.deinit(io);
-    const server_usecs = getTimeMicros() - start_server;
+    const server_usecs = getTimeMicros(io) - start_server;
     const total_usecs = mmdb_usecs + server_usecs;
 
     // Print initialization timing information.
@@ -512,18 +515,20 @@ const IpVersion = union(enum) {
     }
 };
 
-/// Get current time in microseconds using clock_gettime.
+/// Get current time in microseconds using the monotonic clock.
 /// Used for performance timing of operations.
-fn getTimeMicros() i64 {
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(.REALTIME, &ts);
-    return @as(i64, ts.sec) * 1_000_000 + @divTrunc(@as(i64, ts.nsec), 1000);
+fn getTimeMicros(io: std.Io) i64 {
+    return std.Io.Clock.awake.now(io).toMicroseconds();
 }
 
 /// Parse command line arguments.
 /// Returns host, port, and help flag.
-fn parseArgs(args: std.process.Args) struct { host: []const u8, port: u16, help: bool } {
-    var iter = std.process.Args.Iterator.init(args);
+/// Uses a stack-backed fixed allocator; no heap allocation.
+/// `host_buf` stores the copied host so it outlives the args iterator,
+/// whose internal buffer is freed on deinit under Windows.
+fn parseArgs(args: std.process.Args, host_buf: []u8) !struct { host: []const u8, port: u16, help: bool } {
+    var fba = std.heap.FixedBufferAllocator.init(host_buf);
+    var iter = try std.process.Args.Iterator.initAllocator(args, fba.allocator());
     defer iter.deinit();
 
     var host: []const u8 = "127.0.0.1";
@@ -533,7 +538,7 @@ fn parseArgs(args: std.process.Args) struct { host: []const u8, port: u16, help:
     while (iter.next()) |arg| {
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--host")) {
             if (iter.next()) |val| {
-                host = val;
+                host = try fba.allocator().dupe(u8, val);
             }
         } else if (std.mem.eql(u8, arg, "-p") or std.mem.eql(u8, arg, "--port")) {
             if (iter.next()) |val| {

@@ -13,10 +13,16 @@ jobs:
         include:
           - target: x86_64-linux-gnu
             filename: x86_64-linux-gnu
+            exe: geoip-zig
           - target: x86_64-macos-none
             filename: x86_64-macos
+            exe: geoip-zig
           - target: aarch64-macos-none
             filename: aarch64-macos
+            exe: geoip-zig
+          - target: x86_64-windows-gnu
+            filename: x86_64-windows
+            exe: geoip-zig.exe
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -44,7 +50,7 @@ jobs:
         working-directory: /tmp/geoip-build
         run: |
           mkdir -p geoip-zig-${{ steps.get_tag.outputs.TAG }}-${{ matrix.filename }}
-          cp bin/geoip-zig geoip-zig-${{ steps.get_tag.outputs.TAG }}-${{ matrix.filename }}/
+          cp bin/${{ matrix.exe }} geoip-zig-${{ steps.get_tag.outputs.TAG }}-${{ matrix.filename }}/
           cp ${{ github.workspace }}/LICENSE geoip-zig-${{ steps.get_tag.outputs.TAG }}-${{ matrix.filename }}/
           cp ${{ github.workspace }}/NOTICE geoip-zig-${{ steps.get_tag.outputs.TAG }}-${{ matrix.filename }}/
           cp ${{ github.workspace }}/README.md geoip-zig-${{ steps.get_tag.outputs.TAG }}-${{ matrix.filename }}/
