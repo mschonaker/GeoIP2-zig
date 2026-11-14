@@ -228,30 +228,16 @@ fn handleConnection(
 
     const slot = &connections.slots[index];
 
-    // Create reader/writer interfaces for the stream. The counting writer sits
-    // between the HTTP server and the stream writer so each response can be
-    // measured in bytes and in write time.
+    // Create reader/writer interfaces for the stream.
     var reader = stream.reader(io, &slot.request_buffer);
     var writer = stream.writer(io, &slot.response_buffer);
-    var count_buffer: [64]u8 = undefined;
-    var counting: CountingWriter = .{
-        .io = io,
-        .child = &writer.interface,
-        .interface = .{
-            .buffer = &count_buffer,
-            .vtable = &.{ .drain = CountingWriter.drain, .flush = CountingWriter.flush, .rebase = CountingWriter.rebase },
-        },
-    };
 
     // Initialize HTTP server with our reader/writer.
-    var http_server = std.http.Server.init(&reader.interface, &counting.interface);
+    var http_server = std.http.Server.init(&reader.interface, &writer.interface);
 
     while (true) {
         // Receive and parse HTTP request. The request buffer size caps the
         // head; an oversize head ends the connection with 431 (RFC 6585).
-        // The read itself is not timed: a keep-alive connection blocks here
-        // until the client sends the next request, so the wait is client
-        // think time, not server work.
         var request = http_server.receiveHead() catch |err| {
             if (err == error.HttpHeadersOversize) {
                 writer.interface.writeAll(response_431) catch {};
@@ -260,151 +246,47 @@ fn handleConnection(
             return;
         };
 
-        const bytes_before = counting.written;
-        counting.write_ns = 0;
-
+        // Start the clock after the head read: a keep-alive wait is client
+        // time, not server work.
         const start = Io.Timestamp.now(io, .awake);
-        var record: LogRecord = .{
-            .total_ns = 0,
-            .write_ns = 0,
-            .bytes_in = request.head_buffer.len,
-            .bytes_out = 0,
-        };
-
         const status = serveRequest(&request, mmdb_file, slot) catch |err| {
-            record.err_name = @errorName(err);
-            record.sample(io, start, &counting, bytes_before);
-            logRequest(io, &request, record);
+            logRequest(io, &request, start, null, @errorName(err));
             return;
         };
-        record.status = status;
-        record.sample(io, start, &counting, bytes_before);
-        logRequest(io, &request, record);
+        logRequest(io, &request, start, status, null);
 
         if (!request.head.keep_alive) return;
     }
 }
 
-/// Writer that forwards to the connection writer and records the response bytes
-/// and the time spent moving them. The clock reads in `drain`, `flush`, and
-/// `rebase` cover the copies into the connection buffer and the socket writes.
-const CountingWriter = struct {
-    io: Io,
-    child: *Io.Writer,
-    written: u64 = 0,
-    write_ns: i96 = 0,
-    interface: Io.Writer,
-
-    fn drain(w: *Io.Writer, data: []const []const u8, splat: usize) Io.Writer.Error!usize {
-        const self: *CountingWriter = @alignCast(@fieldParentPtr("interface", w));
-
-        // Buffered bytes go first, then the new data.
-        const buffered = w.buffered();
-        w.end = 0;
-        self.written += buffered.len;
-        try self.forward(buffered);
-        for (data, 0..) |bytes, index| {
-            const repeats = if (index + 1 == data.len) splat else 1;
-            self.written += bytes.len * repeats;
-            for (0..repeats) |_| try self.forward(bytes);
-        }
-        return Io.Writer.countSplat(data, splat);
-    }
-
-    fn flush(w: *Io.Writer) Io.Writer.Error!void {
-        const self: *CountingWriter = @alignCast(@fieldParentPtr("interface", w));
-        try Io.Writer.defaultFlush(w);
-
-        const start = Io.Timestamp.now(self.io, .awake);
-        defer self.write_ns += Io.Timestamp.now(self.io, .awake).nanoseconds - start.nanoseconds;
-        try self.child.flush();
-    }
-
-    /// The buffer is fixed, so a larger contiguous request cannot be satisfied.
-    fn rebase(w: *Io.Writer, preserve: usize, capacity: usize) Io.Writer.Error!void {
-        const self: *CountingWriter = @alignCast(@fieldParentPtr("interface", w));
-        if (preserve + capacity > w.buffer.len) return error.WriteFailed;
-
-        // Forward the bytes that are not preserved, then move the tail down.
-        const keep = @min(preserve, w.end);
-        const flushable = w.end - keep;
-        self.written += flushable;
-        try self.forward(w.buffer[0..flushable]);
-        std.mem.copyForwards(u8, w.buffer[0..keep], w.buffer[flushable..w.end]);
-        w.end = keep;
-    }
-
-    fn forward(self: *CountingWriter, bytes: []const u8) Io.Writer.Error!void {
-        if (bytes.len == 0) return;
-        const start = Io.Timestamp.now(self.io, .awake);
-        defer self.write_ns += Io.Timestamp.now(self.io, .awake).nanoseconds - start.nanoseconds;
-        try self.child.writeAll(bytes);
-    }
-};
-
-/// Measured values for one access-log line.
-const LogRecord = struct {
-    status: ?std.http.Status = null,
-    err_name: ?[]const u8 = null,
-    /// Request handling plus response write. Excludes the wait for the client.
-    total_ns: i96,
-    /// Time inside the response writer, including the socket writes.
-    write_ns: i96,
-    bytes_in: usize,
-    bytes_out: u64,
-
-    fn sample(self: *LogRecord, io: Io, start: Io.Timestamp, counting: *const CountingWriter, bytes_before: u64) void {
-        self.total_ns = Io.Timestamp.now(io, .awake).nanoseconds - start.nanoseconds;
-        self.write_ns = counting.write_ns;
-        self.bytes_out = counting.written - bytes_before;
-    }
-};
-
 /// Write one access-log line to stderr.
 ///
-/// The line is `<UTC time> <method> <target> <version> <status> <total>
-/// in=<bytes> out=<bytes> write=<time>`.
-/// A request that fails before a response is sent shows `-` for the status,
-/// followed by the Zig error name.
-fn logRequest(io: Io, request: *std.http.Server.Request, record: LogRecord) void {
-    // Split the wall clock into calendar fields for an ISO 8601 UTC stamp.
-    const now_us = Io.Timestamp.now(io, .real).toMicroseconds();
-    const epoch_seconds: std.time.epoch.EpochSeconds = .{
-        .secs = @intCast(@divFloor(now_us, 1_000_000)),
-    };
-    const year_day = epoch_seconds.getEpochDay().calculateYearDay();
-    const month_day = year_day.calculateMonthDay();
-    const day_seconds = epoch_seconds.getDaySeconds();
-
-    var timestamp_buffer: [32]u8 = undefined;
-    const timestamp = std.fmt.bufPrint(&timestamp_buffer, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}.{d:0>3}Z", .{
-        year_day.year,
-        month_day.month.numeric(),
-        month_day.day_index + 1,
-        day_seconds.getHoursIntoDay(),
-        day_seconds.getMinutesIntoHour(),
-        day_seconds.getSecondsIntoMinute(),
-        @as(u32, @intCast(@divTrunc(@mod(now_us, 1_000_000), 1000))),
-    }) catch return;
+/// The line is `<method> <target> <version> <status> <duration>`.
+/// A request that ends with an error shows `-` for the status, followed by the
+/// Zig error name.
+fn logRequest(
+    io: Io,
+    request: *const std.http.Server.Request,
+    start: Io.Timestamp,
+    status: ?std.http.Status,
+    err_name: ?[]const u8,
+) void {
+    const elapsed_us = @divTrunc(Io.Timestamp.now(io, .awake).nanoseconds - start.nanoseconds, 1000);
 
     var status_buffer: [4]u8 = undefined;
-    const status_text = if (record.status) |s|
+    const status_text = if (status) |s|
         std.fmt.bufPrint(&status_buffer, "{d}", .{@backingInt(s)}) catch "-"
     else
         "-";
 
-    std.debug.print("{s} {s} {s} {s} {s} {d}μs in={d}B out={d}B write={d}μs{s}{s}\n", .{
-        timestamp,
+    std.debug.print("{s} {s} {s} {s} {d}μs{s}{s}\n", .{
         @tagName(request.head.method),
         request.head.target,
         @tagName(request.head.version),
         status_text,
-        @divTrunc(record.total_ns, 1000),
-        record.bytes_in,
-        record.bytes_out,
-        @divTrunc(record.write_ns, 1000),
-        if (record.err_name == null) "" else " ",
-        record.err_name orelse "",
+        elapsed_us,
+        if (err_name == null) "" else " ",
+        err_name orelse "",
     });
 }
 
@@ -426,10 +308,12 @@ fn serveRequest(
     slot: *Connections.Slot,
 ) !std.http.Status {
     // All endpoints are GET-only. An unread body would desync the next
-    // request on a keep-alive connection, so reject requests that carry one.
+    // request, so reject the request and close the connection. Clearing
+    // `keep_alive` also stops the server from reading the body into the
+    // request buffer, which would invalidate the head used by the log.
     if (request.head.content_length != null or request.head.transfer_encoding == .chunked) {
-        request.respond("Request body not allowed", .{ .status = .bad_request }) catch {};
-        return error.BodyRejected;
+        request.head.keep_alive = false;
+        return respond(request, "Request body not allowed", .bad_request);
     }
 
     // Split the request target into the path and the query string.
@@ -479,10 +363,7 @@ fn serveRequest(
 
     // Write JSON directly to streaming body (single underlying stream).
     const proj_ptr: ?*const Projection = if (projection) |*p| p else null;
-    mmdb_file.lookupIpV6(address, &body_writer.writer, proj_ptr) catch |e| {
-        std.debug.print("lookupIpV6 error: {}\n", .{e});
-        return e;
-    };
+    mmdb_file.lookupIpV6(address, &body_writer.writer, proj_ptr) catch |e| return e;
 
     try body_writer.end();
     return .ok;
