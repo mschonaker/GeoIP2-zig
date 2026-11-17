@@ -9,6 +9,7 @@ const zio = @import("zio");
 const mmdb = @import("mmdb/mmdb.zig");
 const MMDBFile = mmdb.MMDBFile;
 const Projection = mmdb.Projection;
+const mcp = @import("mcp.zig");
 
 // Embed the MaxMind database file at compile time.
 const embedded = @embedFile("GeoLite2-City.mmdb");
@@ -249,11 +250,19 @@ fn handleConnection(
         // Start the clock after the head read: a keep-alive wait is client
         // time, not server work.
         const start = Io.Timestamp.now(io, .awake);
+        // Reading a request body reuses the head buffer, so the access log
+        // needs a copy of the target for requests that carry a body.
+        var target_buf: [max_request_bytes]u8 = undefined;
+        const target = if (request.head.content_length != null or request.head.transfer_encoding != .none) copy: {
+            const len = @min(request.head.target.len, target_buf.len);
+            @memcpy(target_buf[0..len], request.head.target[0..len]);
+            break :copy target_buf[0..len];
+        } else request.head.target;
         const status = serveRequest(&request, mmdb_file, slot) catch |err| {
-            logRequest(io, &request, start, null, @errorName(err));
+            logRequest(io, &request, target, start, null, @errorName(err));
             return;
         };
-        logRequest(io, &request, start, status, null);
+        logRequest(io, &request, target, start, status, null);
 
         if (!request.head.keep_alive) return;
     }
@@ -267,6 +276,7 @@ fn handleConnection(
 fn logRequest(
     io: Io,
     request: *const std.http.Server.Request,
+    target: []const u8,
     start: Io.Timestamp,
     status: ?std.http.Status,
     err_name: ?[]const u8,
@@ -281,7 +291,7 @@ fn logRequest(
 
     std.debug.print("{s} {s} {s} {s} {d}μs{s}{s}\n", .{
         @tagName(request.head.method),
-        request.head.target,
+        target,
         @tagName(request.head.version),
         status_text,
         elapsed_us,
@@ -307,7 +317,15 @@ fn serveRequest(
     mmdb_file: *MMDBFile,
     slot: *Connections.Slot,
 ) !std.http.Status {
-    // All endpoints are GET-only. An unread body would desync the next
+    // Split the request target into the path and the query string.
+    const target = request.head.target;
+    const query_at = std.mem.indexOfScalar(u8, target, '?');
+    const path = if (query_at) |q| target[0..q] else target;
+
+    if (std.mem.eql(u8, path, "/mcp"))
+        return mcp.handle(request, mmdb_file, &slot.body_buffer);
+
+    // All other endpoints are GET-only. An unread body would desync the next
     // request, so reject the request and close the connection. Clearing
     // `keep_alive` also stops the server from reading the body into the
     // request buffer, which would invalidate the head used by the log.
@@ -315,11 +333,6 @@ fn serveRequest(
         request.head.keep_alive = false;
         return respond(request, "Request body not allowed", .bad_request);
     }
-
-    // Split the request target into the path and the query string.
-    const target = request.head.target;
-    const query_at = std.mem.indexOfScalar(u8, target, '?');
-    const path = if (query_at) |q| target[0..q] else target;
 
     // Fast path for favicon.ico requests - return empty response.
     if (std.mem.eql(u8, path, "/favicon.ico"))
@@ -500,7 +513,7 @@ test "projection limits the response of the embedded database" {
     try file.lookupIpV6(address, &w, &projection);
     const body = out[0..w.end];
 
-    try std.testing.expect(std.mem.indexOf(u8, body, "\"iso_code\": \"US\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"iso_code\":\"US\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"latitude\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"longitude\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "continent") == null);

@@ -97,7 +97,7 @@ pub const MMDBFile = struct {
     pub fn print(self: *const MMDBFile, writer: *std.Io.Writer) !void {
         var json_stringify: json.Stringify = .{
             .writer = writer,
-            .options = .{ .whitespace = .indent_2 },
+            .options = .{ .whitespace = .minified },
         };
         try json_stringify.beginObject();
         {
@@ -223,7 +223,7 @@ pub const MMDBFile = struct {
         // Create JSON serializer.
         var json_stringify: json.Stringify = .{
             .writer = writer,
-            .options = .{ .whitespace = .indent_2 },
+            .options = .{ .whitespace = .minified },
         };
 
         // Write the data to JSON.

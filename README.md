@@ -120,7 +120,19 @@ GET /ipv4/8.8.8.8?f=country.names.en,location.(latitude,longitude)
   knowledge. Malformed syntax gives `400`.
 - Limits: 32 paths, 8 segments per path, 64-byte segments.
 
-Status codes: `200` lookup result, `204` favicon, `400` bad target, IP format, projection syntax, or request body (all endpoints are GET-only), `404` IP not in database, `431` request head over the 8 KiB cap, `503` connection pool full.
+Status codes: `200` lookup result, `204` favicon, `400` bad target, IP format, projection syntax, or request body (all endpoints except `/mcp` are GET-only), `404` IP not in database, `431` request head over the 8 KiB cap, `503` connection pool full. The MCP endpoint also returns `202` for notifications and `405` for non-POST requests.
+
+## MCP endpoint
+
+`POST /mcp` is a stateless MCP (Model Context Protocol) JSON-RPC 2.0 endpoint. It provides two tools: `lookup_ipv4` and `lookup_ipv6`. The tool result carries the MMDB JSON as a streamed text content block; the server never buffers the full response in memory.
+
+```shell
+curl -s http://127.0.0.1:8080/mcp \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"lookup_ipv4","arguments":{"ip":"8.8.8.8"}}}'
+```
+
+The endpoint supports `initialize`, `ping`, `tools/list`, and `tools/call`. Notifications get `202 Accepted`. A request body is limited to 4 KiB.
 
 ## Benchmarks
 
@@ -150,6 +162,7 @@ cores of CPU at saturation, in 15 fixed threads, 6 MiB of static memory, 0% erro
 ```
 src/
 ├── main.zig              # entry point, evented HTTP server, connection slots
+├── mcp.zig               # minimal MCP endpoint (JSON-RPC over HTTP)
 ├── mmdb/
 │   ├── mmdb.zig         # MMDB file loader, trie traversal, lookup API
 │   ├── data_reader.zig  # binary format parser (pointers, maps, strings, integers)
